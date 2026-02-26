@@ -11,12 +11,13 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision
 
-# MediaPipe Pose landmark indices for left arm
-LEFT_ARM_IDS = [11, 13, 15] # shoulder, elbow, wrist
-LEFT_ARM_NAMES = {
+# MediaPipe Pose landmark indices: left arm + right shoulder (for trunk reference later)
+POSE_KEYPOINT_IDS = [11, 13, 15, 12]  # left_shoulder, left_elbow, left_wrist, right_shoulder
+POSE_KEYPOINT_NAMES = {
     11: "left_shoulder",
     13: "left_elbow",
     15: "left_wrist",
+    12: "right_shoulder",
 }
 
 RGB_SOCKET = dai.CameraBoardSocket.CAM_A
@@ -55,7 +56,7 @@ def depth_at(depth_mm, u, v, patch=7):
     return float(np.median(roi)) / 1000.0 # mm -> meters
 
 def main():
-    parser = argparse.ArgumentParser(description="Live 3D pose from OAK-D (RGB + depth), left arm keypoints.")
+    parser = argparse.ArgumentParser(description="Live 3D pose from OAK-D (RGB + depth): left arm + right shoulder.")
     parser.add_argument("--subject", type=int, required=True, help="Subject number (1, 2, 3, ...)")
     parser.add_argument("--motion", type=str, required=True, help="Motion name (e.g. reach, curved_reach)")
     parser.add_argument("--trial", type=int, required=True, help="Trial number")
@@ -101,7 +102,7 @@ def main():
         min_tracking_confidence=0.5,
     )
 
-    all_frames = [] # List of (3,3) np.ndarray of x,y,z coordinates of the pose landmarks
+    all_frames = []  # List of (4, 3) np.ndarray: x,y,z of left_shoulder, left_elbow, left_wrist, right_shoulder
     all_t = [] # device timestamps (seconds)
     all_json = [] # optional
 
@@ -248,7 +249,7 @@ def main():
             # PoseLandmarker VIDEO inference (synchronous). :contentReference[oaicite:4]{index=4}
             result = landmarker.detect_for_video(mp_image, ts_ms)
 
-            left_arm_xyz = np.full((len(LEFT_ARM_IDS), 3), np.nan, dtype=np.float32)
+            pose_xyz = np.full((len(POSE_KEYPOINT_IDS), 3), np.nan, dtype=np.float32)
 
             frame_json = None
             if args.json:
@@ -260,7 +261,7 @@ def main():
 
                 h, w = frame_bgr.shape[:2]
 
-                for j, idx in enumerate(LEFT_ARM_IDS):
+                for j, idx in enumerate(POSE_KEYPOINT_IDS):
                     lm = pose0[idx]
                     u, v = lm.x * w, lm.y * h
                     
@@ -270,13 +271,13 @@ def main():
                         continue
 
                     x, y, z = deproject(u, v, z_m, fx, fy, cx, cy)
-                    left_arm_xyz[j] = (x, y, z)
+                    pose_xyz[j] = (x, y, z)
 
                     # Overlay
                     cv2.circle(frame_bgr, (int(u), int(v)), 3, (0, 255, 0), -1)
                     cv2.putText(
                         frame_bgr,
-                        f"{LEFT_ARM_NAMES[idx]} z={z:.2f}m",
+                        f"{POSE_KEYPOINT_NAMES[idx]} z={z:.2f}m",
                         (int(u)+5, int(v)-5),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.4,
@@ -285,7 +286,7 @@ def main():
                     )
 
                     if frame_json is not None:
-                        frame_json["joints"][LEFT_ARM_NAMES[idx]] = {
+                        frame_json["joints"][POSE_KEYPOINT_NAMES[idx]] = {
                             "x": x, "y": y, "z": z,          # camera-frame meters (from OAK depth)
                             "u": float(u), "v": float(v),     # pixel coords
                             "visibility": float(getattr(lm, "visibility", 1.0)),
@@ -294,7 +295,7 @@ def main():
 
             if phase == "recording":
                 video_writer.write(frame_bgr)
-                all_frames.append(left_arm_xyz)
+                all_frames.append(pose_xyz)
                 all_t.append(t_sec)
                 if frame_json is not None:
                     all_json.append(frame_json)
@@ -315,7 +316,7 @@ def main():
             video_writer.release()
             print(f"Saved video: {video_path}")
 
-    seq = np.stack(all_frames, axis=0) if all_frames else np.zeros((0, len(LEFT_ARM_IDS), 3), dtype=np.float32)
+    seq = np.stack(all_frames, axis=0) if all_frames else np.zeros((0, len(POSE_KEYPOINT_IDS), 3), dtype=np.float32)
     t = np.array(all_t, dtype=np.float64)
 
     npy_seq_path = outdir / "left_arm_seq_camera.npy"
@@ -328,7 +329,7 @@ def main():
         "motion": args.motion,
         "trial": args.trial,
         "shape": list(seq.shape),
-        "keypoint_names": list(LEFT_ARM_NAMES.values()),
+        "keypoint_names": list(POSE_KEYPOINT_NAMES.values()),
         "source": "3d_pose.py (OAK-D live)",
         "record_duration_sec": RECORD_DURATION,
     }
