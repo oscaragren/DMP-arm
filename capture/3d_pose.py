@@ -33,13 +33,11 @@ def deproject(u, v, z_m, fx, fy, cx, cy):
 COUNTDOWN_SECONDS = 3  # 3, 2, 1 then Go
 RECORD_DURATION = 4.0  # seconds to record after countdown
 
-
 def _draw_centered_text(frame, text, font_scale=3, thickness=6):
     h, w = frame.shape[:2]
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
     x, y = (w - tw) // 2, (h + th) // 2
     cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
-
 
 def depth_at(depth_mm, u, v, patch=7):
     h, w  = depth_mm.shape[:2]
