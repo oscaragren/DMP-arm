@@ -133,6 +133,11 @@ DMPs are defined in joint space (e.g. 5 DoF: elbow + shoulder 3-DOF + optional);
   python vis/plot_left_arm_angles.py --path test_data/processed/subject_01/reach/trial_001
   ```
 
+- **Plot DMP trajectory (demo vs generated from angles.npz):**
+  ```bash
+  python vis/plot_dmp_trajectory.py --path test_data/processed/subject_01/reach/trial_001
+  ```
+
 - **Run DMP tests:**
   ```bash
   python tests/test_dmp.py

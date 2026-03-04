@@ -102,7 +102,7 @@ def rollout_simple(model: DMPModel,
 
     Uses Euler integration for simplicity.
     """
-    n_steps = int(tau / dt) + 1
+    n_steps = int(round(tau / dt)) + 1
     q = q0.copy().astype(float) # initial position
     dq = np.zeros_like(q) # initial velocity
     q_gen = np.zeros((n_steps, model.n_joints)) # generated trajectory
@@ -122,8 +122,6 @@ def rollout_simple(model: DMPModel,
             ddq = (model.alpha_transformation * model.beta_transformation * (g[j] - q[j]) - model.alpha_transformation * dq[j] + (g[j] - q0[j]) * f) / (tau**2)
             dq[j] += ddq * dt
             q[j] += dq[j] * dt
-
-
 
         q_gen[k] = q # store current position
         t += dt # increment time
