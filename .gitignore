@@ -57,3 +57,6 @@ htmlcov/
 *.log
 .env
 .env.local
+
+# Arm sim files
+sim/arm/

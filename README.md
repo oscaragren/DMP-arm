@@ -27,6 +27,10 @@ DMP-Master-Thesis/
 ├── vis/                    # Visualization
 │   ├── plot_trajectory.py     # 3D trajectory from left_arm_seq_camera.npy
 │   └── plot_left_arm_angles.py # Joint angles over time (from sequence_to_angles)
+├── sim/                    # Simulation (Open3D arm replay)
+│   ├── arm_fk.py            # FK from 4 DoF angles to link transforms
+│   ├── load_arm_meshes.py    # Load arm STLs with URDF scale/orientation
+│   └── visualize_replay.py   # Replay angles.npz in 3D (Open3D)
 ├── tests/
 │   └── test_dmp.py         # DMP fit + rollout reproduction tests
 ├── data/                   # Main data (raw + processed)
@@ -138,6 +142,12 @@ DMPs are defined in joint space (e.g. 5 DoF: elbow + shoulder 3-DOF + optional);
   python vis/plot_dmp_trajectory.py --path test_data/processed/subject_01/reach/trial_001
   ```
 
+- **Replay arm motion in 3D (Open3D):**
+  ```bash
+  pip install open3d   # if not already installed
+  python sim/visualize_replay.py --path test_data/processed/subject_01/reach/trial_001
+  ```
+
 - **Run DMP tests:**
   ```bash
   python tests/test_dmp.py
@@ -147,6 +157,6 @@ DMPs are defined in joint space (e.g. 5 DoF: elbow + shoulder 3-DOF + optional);
 
 ## Current state
 
-- **Done:** 2D capture (video + MediaPipe pose), keypoint cleaning/resampling, live 3D capture (OAK-D + depth), kinematics (elbow + shoulder 3-DOF), mapping from 3D sequence to angles, DMP fit and rollouts (Euler + RK4), trajectory and angle plotting, unit tests for DMP reproduction.
+- **Done:** 2D capture (video + MediaPipe pose), keypoint cleaning/resampling, live 3D capture (OAK-D + depth), kinematics (elbow + shoulder 3-DOF), mapping from 3D sequence to angles, DMP fit and rollouts (Euler + RK4), trajectory and angle plotting, **simulation visualization (Open3D arm replay from angles.npz)**, unit tests for DMP reproduction.
 - **Data:** Raw and processed layouts under `data/` and `test_data/` with subject/motion/trial hierarchy; meta.json and .npy/.npz outputs.
 - **Not in repo:** Large assets (e.g. MediaPipe `.task` bundles, OpenVINO model weights) are expected to be added or referenced separately as needed.
