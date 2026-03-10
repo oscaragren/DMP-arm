@@ -59,4 +59,4 @@ htmlcov/
 .env.local
 
 # Arm sim files
-sim/arm/
+sim/inmoov/
