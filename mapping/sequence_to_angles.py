@@ -62,16 +62,21 @@ def sequence_to_angles(seq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def save_angles_for_trial(trial_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     """
-    Load left_arm_seq_camera.npy from a trial directory, compute angles, save to angles.npz.
+    Load left_arm_seq_camera.npy (or left_arm_seq_camera_cleaned.npy if present) from a trial
+    directory, compute angles, save to angles.npz.
 
     trial_dir: path to trial (e.g. test_data/processed/subject_01/reach/trial_001).
 
     Returns:
         elbow_rad (T,), shoulder_rad (T, 3).
     """
-    seq_path = trial_dir / "left_arm_seq_camera.npy"
+    from capture.clean_keypoints import LEFT_ARM_SEQ_CLEANED
+
+    seq_path = trial_dir / LEFT_ARM_SEQ_CLEANED
     if not seq_path.exists():
-        raise FileNotFoundError(f"Not found: {seq_path}")
+        seq_path = trial_dir / "left_arm_seq_camera.npy"
+    if not seq_path.exists():
+        raise FileNotFoundError(f"Not found: {seq_path} or left_arm_seq_camera.npy")
     seq = np.load(seq_path)
     elbow_rad, shoulder_rad = sequence_to_angles_rad(seq)
     elbow_deg = np.degrees(elbow_rad)

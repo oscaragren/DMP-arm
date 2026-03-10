@@ -22,9 +22,16 @@ from mapping.sequence_to_angles import sequence_to_angles_rad
 
 
 def load_trial(trial_dir: Path):
-    """Load sequence and time from a trial directory. Returns seq (T, 4, 3), t (T,), meta dict."""
-    seq_path = trial_dir / "left_arm_seq_camera.npy"
-    t_path = trial_dir / "left_arm_t.npy"
+    """Load sequence and time from a trial directory. Returns seq (T, 4, 3), t (T,), meta dict.
+    Prefers left_arm_seq_camera_cleaned.npy / left_arm_t_cleaned.npy when present."""
+    from capture.clean_keypoints import LEFT_ARM_SEQ_CLEANED, LEFT_ARM_T_CLEANED
+
+    seq_path = trial_dir / LEFT_ARM_SEQ_CLEANED
+    if not seq_path.exists():
+        seq_path = trial_dir / "left_arm_seq_camera.npy"
+    t_path = trial_dir / LEFT_ARM_T_CLEANED
+    if not t_path.exists():
+        t_path = trial_dir / "left_arm_t.npy"
     meta_path = trial_dir / "meta.json"
     if not seq_path.exists():
         raise FileNotFoundError(f"Not found: {seq_path}")

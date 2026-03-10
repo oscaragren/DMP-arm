@@ -141,10 +141,14 @@ def main() -> None:
         p.disconnect()
         raise FileNotFoundError(f"URDF not found: {urdf_path}")
 
+    # Orient the standalone arm so that, at zero joint angles, the upper arm
+    # hangs down along the human body (green Y‑axis pointing downward in the
+    # PyBullet world frame).
+    base_orn = p.getQuaternionFromEuler([-math.pi / 2.0, 0.0, 0.0])
     robot = p.loadURDF(
         urdf_rel,
         basePosition=[0, 0, 0],
-        baseOrientation=p.getQuaternionFromEuler([0.0, 0.0, 0.0]),
+        baseOrientation=base_orn,
         useFixedBase=True,
     )
 

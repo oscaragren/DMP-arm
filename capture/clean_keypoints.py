@@ -84,6 +84,120 @@ def _lowpass_filter(
     return out
 
 
+def _interpolate_nan_gaps_seq(
+    seq: np.ndarray,
+    t: np.ndarray,
+    max_gap_frames: int = 5,
+) -> np.ndarray:
+    """Fill short NaN gaps in (T, 4, 3) left-arm sequence with linear interpolation."""
+    T, K, D = seq.shape
+    out = seq.copy().astype(np.float64)
+    for k in range(K):
+        for d in range(D):
+            x = out[:, k, d]
+            valid = np.isfinite(x)
+            if not np.any(~valid):
+                continue
+            if np.sum(valid) < 2:
+                continue
+            t_valid = t[valid]
+            x_valid = x[valid]
+            f = interp1d(t_valid, x_valid, kind="linear", fill_value="extrapolate")
+            # Only fill gaps of length <= max_gap_frames to avoid smoothing over long dropouts
+            nan_mask = ~valid
+            gap_starts = np.where(np.r_[False, nan_mask[1:] & ~nan_mask[:-1]])[0]
+            gap_ends = np.where(np.r_[nan_mask[:-1] & ~nan_mask[1:], False])[0] + 1
+            if nan_mask[-1]:
+                gap_ends = np.r_[gap_ends, T]
+            if nan_mask[0]:
+                gap_starts = np.r_[0, gap_starts]
+            for gs, ge in zip(gap_starts, gap_ends):
+                if ge - gs > max_gap_frames:
+                    continue
+                out[gs:ge, k, d] = f(t[gs:ge])
+    return out
+
+
+def _resample_seq(
+    t: np.ndarray,
+    seq: np.ndarray,
+    dt: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Resample (T, 4, 3) sequence to uniform dt. Returns t_new, seq_new. Handles NaN by interpolating from valid points."""
+    t_new = np.arange(t[0], t[-1] + 1e-9, dt)
+    if t_new[-1] < t[-1] - 1e-6:
+        t_new = np.r_[t_new, t[-1]]
+    T_new = len(t_new)
+    K, D = seq.shape[1], seq.shape[2]
+    seq_new = np.zeros((T_new, K, D), dtype=np.float32)
+    for k in range(K):
+        for d in range(D):
+            x = seq[:, k, d]
+            if np.any(np.isnan(x)):
+                valid = np.isfinite(x)
+                if np.sum(valid) < 2:
+                    seq_new[:, k, d] = np.nan
+                    continue
+                f = interp1d(t[valid], x[valid], kind="linear", fill_value="extrapolate")
+                seq_new[:, k, d] = f(t_new)
+            else:
+                f = interp1d(t, x, kind="linear", fill_value="extrapolate")
+                seq_new[:, k, d] = f(t_new)
+    return t_new, seq_new
+
+
+# Filenames for cleaned left-arm sequence (do not overwrite originals)
+LEFT_ARM_SEQ_CLEANED = "left_arm_seq_camera_cleaned.npy"
+LEFT_ARM_T_CLEANED = "left_arm_t_cleaned.npy"
+
+
+def run_clean_left_arm_sequence(
+    trial_dir: Path,
+    max_gap_frames: int = 5,
+    cutoff_hz: float = 5.0,
+    filter_order: int = 2,
+    target_dt: float | None = 0.04,
+) -> None:
+    """
+    Clean left_arm_seq_camera.npy in trial_dir: interpolate NaN gaps, low-pass filter, optional resample.
+    Writes to left_arm_seq_camera_cleaned.npy and left_arm_t_cleaned.npy (originals unchanged).
+    Expects (T, 4, 3) and (T,) arrays.
+    """
+    seq_path = trial_dir / "left_arm_seq_camera.npy"
+    t_path = trial_dir / "left_arm_t.npy"
+    if not seq_path.exists():
+        raise FileNotFoundError(f"Missing {seq_path}")
+    seq = np.load(seq_path)
+    if seq.ndim != 3 or seq.shape[1] != 4 or seq.shape[2] != 3:
+        raise ValueError(f"Expected left_arm_seq shape (T, 4, 3), got {seq.shape}")
+    t = np.load(t_path) if t_path.exists() else np.arange(seq.shape[0], dtype=np.float64)
+    if len(t) != seq.shape[0]:
+        t = np.arange(seq.shape[0], dtype=np.float64)
+
+    # Estimate fps from timestamps
+    if len(t) > 1:
+        dt_med = np.median(np.diff(t))
+        fps = float(1.0 / dt_med) if dt_med > 1e-6 else 25.0
+    else:
+        fps = 25.0
+
+    # 1) Interpolate short NaN gaps
+    seq = _interpolate_nan_gaps_seq(seq, t, max_gap_frames=max_gap_frames)
+
+    # 2) Low-pass filter (skip channels that are still all NaN)
+    seq = _lowpass_filter(seq, fps, cutoff_hz=cutoff_hz, order=filter_order)
+
+    # 3) Optional resample to uniform dt
+    if target_dt is not None and target_dt > 0:
+        t, seq = _resample_seq(t, seq, target_dt)
+
+    out_seq_path = trial_dir / LEFT_ARM_SEQ_CLEANED
+    out_t_path = trial_dir / LEFT_ARM_T_CLEANED
+    np.save(out_seq_path, seq)
+    np.save(out_t_path, t.astype(np.float64))
+    print(f"Cleaned and saved {out_seq_path.name} (and {out_t_path.name}), {seq.shape[0]} frames.")
+
+
 def _resample(
     t: np.ndarray,
     keypoints: np.ndarray,
@@ -240,7 +354,7 @@ def main():
     parser.add_argument(
         "--processed-dir",
         type=Path,
-        default=Path("data/processed"),
+        default=Path("test_data/processed"),
         help="Root of processed data",
     )
     parser.add_argument(
