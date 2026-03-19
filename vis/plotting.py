@@ -179,7 +179,7 @@ def plot_angles_overlay_grid(
     ax.set_xlabel("Time (s) (or index if timestamps missing)")
     ax.set_ylabel("Angle (deg)")
     ax.grid(True, alpha=0.3)
-    ax.set_ylim(0, 200)
+    ax.set_ylim(0, 100)
     ax.legend(loc="upper right", ncols=3, fontsize=8)
 
     ax = axes[r, 1]
@@ -346,6 +346,151 @@ def plot_dmp_overlay_grid(
     plt.tight_layout()
     plt.savefig(out_path, dpi=140)
     plt.close(fig)
+
+
+def plot_dmp_order_basis_grids_per_joint(
+    *,
+    filter_orders: list[int],
+    n_basis_list: list[int],
+    raw_by_basis: dict[int, tuple[np.ndarray, np.ndarray]],
+    clean_by_basis_order: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]],
+    meta: dict,
+    out_dir: Path,
+    filename_prefix: str = "",
+    n_time_points: int = 200,
+) -> list[Path]:
+    """
+    Create 4 figures (one per joint). Each figure is a grid:
+
+    - columns: filter_orders (cleaning filter order)
+    - rows:    n_basis_list (DMP basis functions)
+
+    Each cell overlays RAW (demo + DMP) with CLEAN(oX) (demo + DMP) for the same n_basis.
+
+    Returns list of written figure paths (length 4).
+    """
+    if n_time_points < 2:
+        raise ValueError("n_time_points must be >= 2")
+
+    t_common = np.linspace(0.0, 1.0, int(n_time_points))
+
+    def _resample_1d(y: np.ndarray) -> np.ndarray:
+        """Resample 1D signal y(t) onto t_common, using linear interpolation in normalized time."""
+        if y.ndim != 1:
+            raise ValueError(f"Expected 1D array, got shape {y.shape}")
+        if y.size < 2:
+            return np.full_like(t_common, np.nan, dtype=np.float64)
+        t_src = np.linspace(0.0, 1.0, y.size)
+        return np.interp(t_common, t_src, y).astype(np.float64, copy=False)
+
+    joint_names = [
+        "Elbow flexion",
+        "Shoulder flexion",
+        "Shoulder abduction",
+        "Shoulder internal rotation",
+    ]
+
+    subject = meta.get("subject", "?")
+    motion = meta.get("motion", "?")
+    trial = meta.get("trial", "?")
+
+    out_paths: list[Path] = []
+    n_rows = len(n_basis_list)
+    n_cols = len(filter_orders)
+
+    for j, joint_name in enumerate(joint_names):
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(3.8 * n_cols, 2.8 * n_rows),
+            sharex=True,
+            sharey=True,
+        )
+        if n_rows == 1 and n_cols == 1:
+            axes = np.array([[axes]])
+        elif n_rows == 1:
+            axes = np.array([axes])
+        elif n_cols == 1:
+            axes = axes[:, None]
+
+        for r, n_basis in enumerate(n_basis_list):
+            if n_basis not in raw_by_basis:
+                continue
+            q_raw_demo, q_raw_gen = raw_by_basis[n_basis]
+            raw_demo_j = _resample_1d(np.degrees(q_raw_demo[:, j]))
+            raw_gen_j = _resample_1d(np.degrees(q_raw_gen[:, j]))
+
+            for c, order in enumerate(filter_orders):
+                ax = axes[r, c]
+                ax.plot(
+                    t_common,
+                    raw_demo_j,
+                    color="#34495e",
+                    linewidth=1.1,
+                    label="raw demo",
+                )
+                ax.plot(
+                    t_common,
+                    raw_gen_j,
+                    color="#2c3e50",
+                    linestyle="--",
+                    linewidth=1.0,
+                    label="raw dmp",
+                )
+
+                key = (n_basis, order)
+                if key in clean_by_basis_order:
+                    q_clean_demo, q_clean_gen = clean_by_basis_order[key]
+                    clean_demo_j = _resample_1d(np.degrees(q_clean_demo[:, j]))
+                    clean_gen_j = _resample_1d(np.degrees(q_clean_gen[:, j]))
+                    ax.plot(
+                        t_common,
+                        clean_demo_j,
+                        color="#8e44ad",
+                        linewidth=1.0,
+                        label=f"clean o{order} demo",
+                    )
+                    ax.plot(
+                        t_common,
+                        clean_gen_j,
+                        color="#6c3483",
+                        linestyle="--",
+                        linewidth=0.9,
+                        label=f"clean o{order} dmp",
+                    )
+
+                ax.grid(True, alpha=0.25)
+                if r == 0:
+                    ax.set_title(f"o{order}", fontsize=10)
+                if c == 0:
+                    ax.set_ylabel(f"n={n_basis}\nAngle (deg)")
+                if r == n_rows - 1:
+                    ax.set_xlabel("Time (normalized)")
+
+                # Keep legends from cluttering: show once in top-left subplot.
+                if r == 0 and c == 0:
+                    ax.legend(loc="upper right", fontsize=7, framealpha=0.9)
+
+        fig.suptitle(
+            f"DMP sweep grid — {joint_name}\nsubject {subject}, {motion}, trial {trial} (cols=filter_order, rows=n_basis)",
+            fontsize=12,
+        )
+        plt.tight_layout()
+
+        safe_joint = (
+            joint_name.lower()
+            .replace(" ", "_")
+            .replace("-", "_")
+            .replace("(", "")
+            .replace(")", "")
+            .replace("/", "_")
+        )
+        out_path = out_dir / f"{filename_prefix}dmp_grid_orders_vs_basis_{safe_joint}.png"
+        plt.savefig(out_path, dpi=140)
+        plt.close(fig)
+        out_paths.append(out_path)
+
+    return out_paths
 
 
 # -------------------------

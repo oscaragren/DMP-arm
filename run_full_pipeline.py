@@ -50,6 +50,7 @@ from mapping.sequence_to_angles import sequence_to_angles_rad
 from vis.plotting import (
     plot_angles_overlay_grid,
     plot_angles_single,
+    plot_dmp_order_basis_grids_per_joint,
     plot_dmp_overlay_grid,
     plot_dmp_single,
 )
@@ -105,7 +106,7 @@ def _save_angles_npz(out_npz: Path, elbow_rad: np.ndarray, shoulder_rad: np.ndar
 def _fit_rollout_dmp(q_demo: np.ndarray, n_basis: int) -> tuple[np.ndarray, np.ndarray, float, object]:
     """Return (q_demo_smoothed_rad, q_gen_rad, dt, model)."""
     # Smooth demonstrated angles before fitting / finite‑difference derivatives.
-    q_demo = np.deg2rad(smooth_angles_deg(np.degrees(q_demo)))
+    q_demo = np.deg2rad(smooth_angles_deg(np.degrees(q_demo), method="savgol"))
     T = q_demo.shape[0]
     tau = 1.0
     dt = tau / (T - 1)
@@ -119,8 +120,8 @@ def _fit_rollout_dmp(q_demo: np.ndarray, n_basis: int) -> tuple[np.ndarray, np.n
         beta_transformation=6.25,
     )
     q_gen = rollout_simple(model, q_demo[0], q_demo[-1], tau=tau, dt=dt)
-    report = validate_joint_trajectory_deg(np.degrees(q_gen), dt, name=f"DMP rollout (deg), n_basis={n_basis}")
-    print(report.reason)
+    #report = validate_joint_trajectory_deg(np.degrees(q_gen), dt, name=f"DMP rollout (deg), n_basis={n_basis}")
+    #print(report.reason)
     return q_demo, q_gen, dt, model
 
 
@@ -236,9 +237,13 @@ def run_full_pipeline(
             raise ValueError(f"Not enough valid clean samples for order={order}: {q.shape}")
         q_cleans.append((order, q))
 
+    raw_by_basis: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    clean_by_basis_order: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+
     for n_basis in n_basis_list:
         print(f"DMP(n_basis={n_basis}): fitting+rollout for RAW...")
         q_raw_demo, q_raw_gen, _dt, model_raw = _fit_rollout_dmp(q_raw, n_basis=n_basis)
+        raw_by_basis[n_basis] = (q_raw_demo, q_raw_gen)
         raw_dmp_fig = out(f"dmp_trajectory_raw_n{n_basis}.png")
         plot_dmp_single(q_raw_demo, q_raw_gen, meta, raw_dmp_fig, title_suffix=f"raw, n_basis={n_basis}")
         generated_files.append(raw_dmp_fig)
@@ -251,6 +256,7 @@ def run_full_pipeline(
             print(f"DMP(n_basis={n_basis}): fitting+rollout for CLEAN(o{order})...")
             q_clean_demo, q_clean_gen, _dt, model_clean = _fit_rollout_dmp(q_clean, n_basis=n_basis)
             clean_dmp_pairs.append((order, q_clean_demo, q_clean_gen))
+            clean_by_basis_order[(n_basis, order)] = (q_clean_demo, q_clean_gen)
             clean_dmp_fig = out(f"dmp_trajectory_clean_o{order}_n{n_basis}.png")
             plot_dmp_single(
                 q_clean_demo,
@@ -273,6 +279,18 @@ def run_full_pipeline(
             n_basis=n_basis,
         )
         generated_files.append(dmp_overlay_fig)
+
+    # --- Per-joint sweep grids: (rows=n_basis, cols=filter_order) ---
+    grid_paths = plot_dmp_order_basis_grids_per_joint(
+        filter_orders=list(filter_orders),
+        n_basis_list=list(n_basis_list),
+        raw_by_basis=raw_by_basis,
+        clean_by_basis_order=clean_by_basis_order,
+        meta=meta,
+        out_dir=trial_dir,
+        filename_prefix=f"{prefix}",
+    )
+    generated_files.extend(grid_paths)
 
     # --- Zip bundle ---
     zip_path = trial_dir / f"{prefix}raw_clean_sweep_outputs.zip"

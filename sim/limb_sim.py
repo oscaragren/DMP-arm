@@ -154,7 +154,7 @@ def main() -> None:
     # Orient the standalone arm so that, at zero joint angles, the upper arm
     # hangs down along the human body (green Y‑axis pointing downward in the
     # PyBullet world frame).
-    base_orn = p.getQuaternionFromEuler([-math.pi / 2.0, 0.0, 0.0])
+    base_orn = p.getQuaternionFromEuler([math.pi / 2.0, 0.0, 0.0])
     robot = p.loadURDF(
         urdf_rel,
         basePosition=[0, 0, 0],
@@ -176,9 +176,11 @@ def main() -> None:
     #   3: shoulder_internal_rotation
     #
     # Arm URDF joints (left arm, approximate anatomical mapping):
+    # NOTE: For this URDF, rotx/roty appear swapped visually vs our intended anatomy,
+    # so we map flexion -> roty and internal rotation -> rotx.
     #   jLeftShoulder_rotz  (about Z in arm base frame)  <-- use shoulder_abduction
-    #   jLeftShoulder_rotx  (about X)                   <-- use shoulder_flexion
-    #   jLeftShoulder_roty  (about Y)                   <-- use shoulder_internal_rotation
+    #   jLeftShoulder_roty  (about Y)                   <-- use shoulder_flexion
+    #   jLeftShoulder_rotx  (about X)                   <-- use shoulder_internal_rotation
     #   jLeftElbow_roty     (about Y)                   <-- use elbow_flexion
     #
     # Additional joints (not driven here, but available):
@@ -211,8 +213,8 @@ def main() -> None:
                 # Simple mapping as described above.
                 sh_abd_mapped = abd_sign * sh_abd + abd_offset
                 p.resetJointState(robot, sh_rotz, sh_abd_mapped)
-                p.resetJointState(robot, sh_rotx, sh_flex)
-                p.resetJointState(robot, sh_roty, sh_int)
+                p.resetJointState(robot, sh_roty, sh_flex)
+                p.resetJointState(robot, sh_rotx, sh_int)
                 p.resetJointState(robot, elbow_roty, elbow)
 
                 p.stepSimulation()

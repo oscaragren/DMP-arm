@@ -95,12 +95,14 @@ def main():
 
     # 3. Map our 4 angles to URDF joints; set all 7 arm joints so the chain stays connected
     #    [elbow_flexion, shoulder_elevation, shoulder_azimuth, shoulder_internal_rot]
-    #    -> jLeftElbow_roty, jLeftShoulder_rotz, jLeftShoulder_rotx, jLeftShoulder_roty
+    #    NOTE: For this URDF, rotx/roty appear swapped visually vs our intended anatomy,
+    #    so we map shoulder_elevation -> roty and internal_rot -> rotx.
+    #    -> jLeftElbow_roty, jLeftShoulder_rotz, jLeftShoulder_roty, jLeftShoulder_rotx
     controlled_names = [
         "jLeftElbow_roty",
         "jLeftShoulder_rotz",
-        "jLeftShoulder_rotx",
         "jLeftShoulder_roty",
+        "jLeftShoulder_rotx",
     ]
     # Wrist and elbow twist: keep at 0 so arm doesn't drift
     arm_fixed_names = ["jLeftElbow_rotz", "jLeftWrist_rotx", "jLeftWrist_rotz"]
