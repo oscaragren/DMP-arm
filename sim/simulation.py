@@ -1,23 +1,5 @@
 """
 Play back a DMP‑generated left‑arm trajectory on the standalone arm model in PyBullet.
-
-This is analogous to sim/inmoov_sim.py, but loads the URDF in sim/arm/left_arm.urdf
-instead of the full InMoov model.
-
-Usage (from project root):
-
-    python sim/limb_sim.py --subject 1 --motion lift --trial 6
-
-or:
-
-    python sim/limb_sim.py --path test_data/processed/subject_01/lift/trial_006
-
-The trial directory should contain either:
-- a precomputed rollout `dmp_rollout_{clean|raw}.npz` (preferred), or
-- `angles*.npz` produced by your pipeline (fallback; we re-fit a DMP at runtime),
-with the convention:
-
-    [elbow_flexion, shoulder_flexion, shoulder_abduction, shoulder_internal_rotation] (deg)
 """
 
 from __future__ import annotations
@@ -27,6 +9,7 @@ import math
 import sys
 import time
 from pathlib import Path
+import numpy as np
 
 import pybullet as p
 
@@ -36,9 +19,14 @@ _project_root = _sim_dir.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from dmp.trajectory_io import load_dmp_trajectory, resolve_saved_dmp_rollout_path
 from sim.joint_limits import clamp_dmp_vector
 
+
+def _load_dmp_trajectory(trial_dir: Path) -> tuple[np.ndarray, float]:
+    q_traj = np.load(trial_dir / "dmp_rollout.npz")["q_gen"]
+    dt = np.load(trial_dir / "dmp_rollout.npz")["dt"]
+    print(q_traj)
+    return np.deg2rad(q_traj), float(dt)
 
 def joint_index(body_uid: int, joint_name: str) -> int:
     """Resolve a joint name to its PyBullet index."""
@@ -57,12 +45,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Play back a DMP-generated left-arm trajectory on the standalone arm URDF in PyBullet."
     )
-    parser.add_argument(
-        "--path",
-        type=Path,
-        default=None,
-        help="Path to trial dir (overrides subject/motion/trial).",
-    )
     parser.add_argument("--subject", type=int, default=1, help="Subject number")
     parser.add_argument("--motion", type=str, default="lift", help="Motion name (e.g. reach, lift)")
     parser.add_argument("--trial", type=int, default=6, help="Trial number")
@@ -72,72 +54,22 @@ def main() -> None:
         default=_project_root / "data" / "raw",
         help="Root directory for processed data (subject/motion/trial underneath).",
     )
-    parser.add_argument(
-        "--source",
-        type=str,
-        choices=["raw", "clean"],
-        default="clean",
-        help="Which DMP rollout to use (default: clean).",
-    )
-    parser.add_argument(
-        "--n-basis",
-        type=int,
-        default=30,
-        help="Basis function count to load (default: 30).",
-    )
-    parser.add_argument(
-        "--filter-order",
-        type=int,
-        default=2,
-        help="For clean sweep rollouts: Butterworth filter order (default: 2).",
-    )
     parser.add_argument("--loop", action="store_true", help="Loop playback.")
-    parser.add_argument(
-        "--abd-offset-deg",
-        type=float,
-        default=0.0,
-        help="Constant offset applied to shoulder abduction before mapping to shoulder yaw joint (deg).",
-    )
-    parser.add_argument(
-        "--abd-sign",
-        type=float,
-        default=1.0,
-        help="Sign applied to shoulder abduction before offset (use -1 if direction is flipped).",
-    )
     args = parser.parse_args()
 
-    if args.path is not None:
-        trial_dir: Path = args.path
-    else:
-        trial_dir = (
-            args.data_dir
-            / f"subject_{args.subject:02d}"
-            / args.motion
-            / f"trial_{args.trial:03d}"
-        )
+    # 1) Get the trial directory
+    trial_dir = (
+        args.data_dir
+        / f"subject_{args.subject:02d}"
+        / args.motion
+        / f"trial_{args.trial:03d}"
+    )
     if not trial_dir.exists():
         raise FileNotFoundError(f"Trial directory not found: {trial_dir}")
-
-    rollout_path = resolve_saved_dmp_rollout_path(
-        trial_dir,
-        rollout_source=args.source,
-        basis_functions=args.n_basis,
-        filter_order=args.filter_order,
-    )
-    if rollout_path is not None:
-        print(f"Loading saved DMP rollout: {rollout_path}")
-    else:
-        print("No saved DMP rollout found; will fit+rollout from angles*.npz at runtime.")
-
-    # 1. Load DMP trajectory (elbow + 3 shoulder DOFs)
-    q_traj, dt = load_dmp_trajectory(
-        trial_dir,
-        rollout_source=args.source,
-        basis_functions=args.n_basis,
-        filter_order=args.filter_order,
-    )  # (T, 4), radians
-    q_traj = clamp_dmp_vector(q_traj) # Clamp to joint limits
-
+    # 2) Load the DMP trajectory
+    q_traj, dt = _load_dmp_trajectory(trial_dir)  # (T, 4), radians
+    #q_traj = clamp_dmp_vector(q_traj) # Clamp to joint limits
+    print(q_traj)
     T, _n = q_traj.shape
     traj_duration_s = float((T - 1) * dt)
     print(f"Trajectory duration (simulated): {traj_duration_s:.3f} s  (T={T}, dt={dt:.6f})")

@@ -32,10 +32,9 @@ HUMAN_LIMITS_DEG: np.ndarray = np.array(
 )
 
 
-def retarget(q_demo: np.ndarray) -> np.ndarray:
+def retarget_global(q_demo: np.ndarray) -> np.ndarray:
     f"""
     Range scaling. Map the human range to the robot range with linear scaling.
-    Uses trajectory-specific min and max values for the human and robot ranges.
 
     q_demo is the demonstrated trajectory in radians. (from human)
     q_gen is the generated trajectory in radians. (goes onto robot)
@@ -69,3 +68,56 @@ def retarget(q_demo: np.ndarray) -> np.ndarray:
     #q_robot = savgol_filter(q_robot, window_length=11, polyorder=3)
 
     return q_robot
+
+def retarget(q_demo: np.ndarray) -> np.ndarray:
+    """
+    Retarget the trajectory.
+    Uses trajectory-specific min and max values for the human and robot ranges.
+
+    Args:
+        q_demo: np.ndarray: the demonstrated trajectory
+
+    Returns:
+        np.ndarray: the retargeted trajectory
+    """
+    q_human_min = q_demo.min(axis=0)
+    q_human_max = q_demo.max(axis=0)
+    q_robot_min = JOINT_LIMITS_DEG[:, 0]
+    q_robot_max = JOINT_LIMITS_DEG[:, 1]
+
+    q_robot = q_robot_min + (q_demo - q_human_min) * (q_robot_max - q_robot_min) / (q_human_max - q_human_min)
+    q_robot = np.clip(q_robot, q_robot_min, q_robot_max)
+
+    # Optional: smooth the trajectory (temporal)
+    #q_robot = savgol_filter(q_robot, window_length=11, polyorder=3)
+
+    return q_robot
+
+def retarget_threshold(q_demo: np.ndarray) -> np.ndarray:
+    """
+    Retarget the trajectory if the trajectory for one joint is out of bounds.
+    Args:
+        q_demo: np.ndarray: the demonstrated trajectory
+
+    Returns:
+        np.ndarray: the retargeted trajectory
+    """
+
+    q_robot_min = JOINT_LIMITS_DEG[:, 0]
+    q_robot_max = JOINT_LIMITS_DEG[:, 1]
+    q_traj_min = q_demo.min(axis=0)
+    q_traj_max = q_demo.max(axis=0)
+    q_human_min = HUMAN_LIMITS_DEG[:, 0]
+    q_human_max = HUMAN_LIMITS_DEG[:, 1]
+
+    q_robot = q_demo.copy()
+    for j in range(q_demo.shape[1]):
+        if q_traj_max[j] - q_traj_min[j] > q_robot_max[j] - q_robot_min[j]:
+            print(f"Retargeting globally with human limits for joint {j}")
+            # Retarget globally with human limits
+            q_robot[:, j] = q_robot_min[j] + (q_demo[:, j] - q_human_min[j]) * (q_robot_max[j] - q_robot_min[j]) / (q_human_max[j] - q_human_min[j])
+        else:
+            # Retarget locally with trajectory limits
+            q_robot[:, j] = q_robot_min[j] + (q_demo[:, j] - q_traj_min[j]) * (q_robot_max[j] - q_robot_min[j]) / (q_traj_max[j] - q_traj_min[j])
+        q_robot[:, j] = np.clip(q_robot[:, j], q_robot_min[j], q_robot_max[j])
+    return q_demo

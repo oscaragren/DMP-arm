@@ -1,8 +1,17 @@
 """
 Convert left-arm 3D keypoint sequences (from camera video) to joint angles.
 
-Input: seq (T, 4, 3) with [left_shoulder, left_elbow, left_wrist, right_shoulder]
-in camera-frame meters (e.g. from capture/3d_pose.py).
+Input: seq (T, N, 3) in camera-frame meters.
+
+This module uses `kinematics/simple_kinematics.py`, which builds a trunk frame
+from shoulders + hips. That means the **minimum required indices are**:
+
+- 0: left_shoulder
+- 1: left_elbow
+- 2: left_wrist
+- 3: right_shoulder
+- 4: left_hip
+- 5: right_hip
 
 Output: elbow flexion (T,) and shoulder 3-DOF angles (T, 3) in **radians**
 for downstream use. Convenience helpers exist to also obtain degrees when
@@ -21,11 +30,7 @@ if __name__ == "__main__":
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
 
-from kinematics.left_arm_angles import (
-    #elbow_flexion_deg,
-    #elbow_flexion_rad,
-    shoulder_angles
-)
+from kinematics.simple_kinematics import get_angles as get_left_arm_angles_deg
 
 
 def sequence_to_angles_rad(
@@ -43,27 +48,39 @@ def sequence_to_angles_rad(
              1: left_elbow
              2: left_wrist
              3: right_shoulder
-         Additional required for shoulder_method="rotmat":
-             4: left_index
-             5: left_pinky
+             4: left_hip
+             5: right_hip
 
     Returns:
         elbow_rad: (T,) elbow flexion in radians; NaN where invalid.
         shoulder_rad: (T, 3) shoulder angles in radians:
-            [shoulder_flexion, shoulder_abduction, shoulder_axial_rotation_proxy]; NaN where invalid.
+            [shoulder_flexion, shoulder_abduction, shoulder_internal_rotation_proxy]; NaN where invalid.
     """
-    if seq.ndim != 3 or seq.shape[2] != 3 or seq.shape[1] < 4:
+    # Note: we keep `shoulder_method` / `ik_use_trunk_frame` in the signature for
+    # backwards compatibility, but `simple_kinematics.get_angles` does not expose
+    # those toggles. Enforce defaults to avoid silent behavior differences.
+    if (shoulder_method or "vector").strip().lower() != "vector":
         raise ValueError(
-            f"Expected seq shape (T, N>=4, 3) with [left_shoulder, left_elbow, left_wrist, right_shoulder, ...], got {seq.shape}"
+            "sequence_to_angles_rad now uses kinematics/simple_kinematics.py, "
+            "which does not support shoulder_method!=vector. "
+            f"Got shoulder_method={shoulder_method!r}."
+        )
+    if bool(ik_use_trunk_frame):
+        raise ValueError(
+            "sequence_to_angles_rad now uses kinematics/simple_kinematics.py and "
+            "does not support ik_use_trunk_frame=True."
         )
 
-    angles_deg = shoulder_angles(
-        seq,
-        method=shoulder_method,
-        ik_use_trunk_frame=bool(ik_use_trunk_frame),
-    )  # (T,4) deg
-    elbow_rad = np.deg2rad(angles_deg[:, 3])
-    shoulder_rad = np.deg2rad(angles_deg[:, :3])
+    if seq.ndim != 3 or seq.shape[2] != 3 or seq.shape[1] < 6:
+        raise ValueError(
+            "Expected seq shape (T, N>=6, 3) with "
+            "[left_shoulder, left_elbow, left_wrist, right_shoulder, left_hip, right_hip, ...], "
+            f"got {seq.shape}"
+        )
+
+    angles_deg = get_left_arm_angles_deg(seq)  # (T,4) deg: [elbow, sh_flex, sh_abd, sh_lat/med_rot]
+    elbow_rad = np.deg2rad(angles_deg[:, 0])
+    shoulder_rad = np.deg2rad(angles_deg[:, 1:4])
     return elbow_rad, shoulder_rad
 
 

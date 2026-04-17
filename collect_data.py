@@ -24,8 +24,6 @@ from capture.record_data import record_data
 
 
 def _validate_arguments(*, args: argparse.Namespace) -> None:
-    if args.session is None:
-        raise ValueError("Session name is required")
     if args.subject is None:
         raise ValueError("Subject ID is required")
     if args.motion is None:
@@ -34,7 +32,7 @@ def _validate_arguments(*, args: argparse.Namespace) -> None:
         raise ValueError("Number of trials is required")
 
 
-def _get_stats(*, args: argparse.Namespace, trial_dir: str) -> None:
+def _get_stats(*, trial_dir: str) -> None:
     """Get the stats of the trial."""
     # Number of missing values in the left_arm_seq_camera.npy file
     left_arm_seq_camera = np.load(os.path.join(trial_dir, "left_arm_seq_camera.npy"))
@@ -83,12 +81,11 @@ def main():
     
     # 1) Parse session setups
     ap = argparse.ArgumentParser()
-    ap.add_argument("--session", type=str, required=True, help="Session name")
     ap.add_argument("--subject", type=int, required=True, help="Subject ID")
     ap.add_argument("--motion", type=str, required=True, help="Motion type")
     ap.add_argument("--n_trials", type=int, required=True, help="Number of trials", default=10)
     ap.add_argument("--n_frames", type=int, help="Number of frames", default=240)
-    ap.add_argument("--fps_nominal", type=float, help="Nominal FPS", default=30.0)
+    ap.add_argument("--fps_nominal", type=float, help="Nominal FPS", default=25.0)
     ap.add_argument("--record_duration_sec", type=float, help="Record duration in seconds")
 
     args = ap.parse_args()
@@ -111,13 +108,13 @@ def main():
         os.makedirs(trial_dir, exist_ok=True)
 
         # 5) Record the data
-        ok = record_data(args=args, trial_dir=trial_dir)
+        ok = record_data(args=args, trial_dir=trial_dir, trial=trial_number+1)
         if not ok:
             print("Recording aborted.")
             break
 
         # 6) End and validate the trial
-        _get_stats(args=args, trial_dir=trial_dir)
+        _get_stats(trial_dir=trial_dir)
 
         # 7) Replay the trial
         input("Press enter to replay the trial...")

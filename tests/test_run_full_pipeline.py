@@ -204,37 +204,33 @@ def main():
     # Plot the generated DMP trajectory
     plot_dmp_single(
         q_demo=angles,
-        q_gen=q_gen_raw,
+        q_gen=np.rad2deg(q_gen_raw),
         meta=meta,
         title_suffix="raw",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_raw.png"
     )
 
     plot_dmp_single(
         q_demo=clean_angles,
-        q_gen=q_gen_clean,
+        q_gen=np.rad2deg(q_gen_clean),
         meta=meta,
         title_suffix="clean",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_clean.png"
     )
 
     plot_dmp_single(
         q_demo=angles_retarget,
-        q_gen=q_gen_raw_retarget,
+        q_gen=np.rad2deg(q_gen_raw_retarget),
         meta=meta,
         title_suffix="raw_retarget",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_raw_retarget.png",
     )
 
     plot_dmp_single(
         q_demo=clean_angles_retarget,
-        q_gen=q_gen_clean_retarget,
+        q_gen=np.rad2deg(q_gen_clean_retarget),
         meta=meta,
         title_suffix="clean_retarget",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_clean_retarget.png",
     )
 

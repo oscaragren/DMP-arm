@@ -442,12 +442,11 @@ def run_full_pipeline(
         raw_by_basis[n_basis] = (q_raw_demo, q_raw_gen)
         raw_dmp_fig = out(f"dmp_trajectory_raw_n{n_basis}.png")
         plot_dmp_single(
-            q_raw_demo,
-            q_raw_gen,
+            np.degrees(q_raw_demo),
+            np.degrees(q_raw_gen),
             meta,
             raw_dmp_fig,
             title_suffix=f"raw, n_basis={n_basis}",
-            units=plot_units,
         )
         generated_files.append(raw_dmp_fig)
         raw_dmp_npz = out(f"dmp_rollout_raw_n{n_basis}.npz")
@@ -509,12 +508,11 @@ def run_full_pipeline(
             clean_by_basis_order[(n_basis, order)] = (q_clean_demo, q_clean_gen)
             clean_dmp_fig = out(f"dmp_trajectory_clean_o{order}_n{n_basis}.png")
             plot_dmp_single(
-                q_clean_demo,
-                q_clean_gen,
+                np.degrees(q_clean_demo),
+                np.degrees(q_clean_gen),
                 meta,
                 clean_dmp_fig,
                 title_suffix=f"clean o{order}, n_basis={n_basis}",
-                units=plot_units,
             )
             generated_files.append(clean_dmp_fig)
             clean_dmp_npz = out(f"dmp_rollout_clean_o{order}_n{n_basis}.npz")

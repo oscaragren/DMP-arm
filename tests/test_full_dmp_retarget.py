@@ -113,7 +113,7 @@ def plot_retarget_options_overlay(
 def main():
     
     # Load the data
-    trial_dir = Path("test_data/processed/subject_03/random/trial_007")
+    trial_dir = Path("data/raw/subject_10/test/trial_001")
     seq, t = _load_raw_seq_t(trial_dir)
     meta = _load_meta(trial_dir)
 
@@ -328,55 +328,49 @@ def main():
     # Plot the generated DMP trajectory
     plot_dmp_single(
         q_demo=angles,
-        q_gen=q_gen_raw,
+        q_gen=np.rad2deg(q_gen_raw),
         meta=meta,
         title_suffix="raw",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_raw.png"
     )
 
     plot_dmp_single(
         q_demo=clean_angles,
-        q_gen=q_gen_clean,
+        q_gen=np.rad2deg(q_gen_clean),
         meta=meta,
         title_suffix="clean",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_clean.png"
     )
 
     # Retarget DEMO (fit/rollout in retarget space)
     plot_dmp_single(
         q_demo=angles_retarget,
-        q_gen=q_gen_raw_demo_retarget,
+        q_gen=np.rad2deg(q_gen_raw_demo_retarget),
         meta=meta,
         title_suffix="raw_demo_retarget",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_raw_demo_retarget.png",
     )
     plot_dmp_single(
         q_demo=clean_angles_retarget,
-        q_gen=q_gen_clean_demo_retarget,
+        q_gen=np.rad2deg(q_gen_clean_demo_retarget),
         meta=meta,
         title_suffix="clean_demo_retarget",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_clean_demo_retarget.png",
     )
 
     plot_dmp_single(
         q_demo=angles,
-        q_gen=q_gen_raw_retarget,
+        q_gen=np.rad2deg(q_gen_raw_retarget),
         meta=meta,
         title_suffix="raw_retarget_rollout",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_raw_retarget.png",
     )
 
     plot_dmp_single(
         q_demo=clean_angles,
-        q_gen=q_gen_clean_retarget,
+        q_gen=np.rad2deg(q_gen_clean_retarget),
         meta=meta,
         title_suffix="clean_retarget_rollout",
-        units="deg",
         out_path=trial_dir / "dmp_trajectory_clean_retarget.png",
     )
 

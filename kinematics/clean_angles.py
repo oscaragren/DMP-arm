@@ -15,7 +15,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 from scipy.signal import butter, filtfilt
 
-from mapping.sequence_to_angles import sequence_to_angles_rad
+from mapping.sequence_to_angles import sequence_to_angles_rad, sequence_to_angles
 from vis.trial_naming import trial_prefix
 
 
@@ -140,7 +140,7 @@ def run_clean_left_arm_angles(
     if t.ndim != 1 or t.shape[0] != seq.shape[0]:
         t = np.arange(seq.shape[0], dtype=np.float64)
 
-    elbow_rad, shoulder_rad = sequence_to_angles_rad(seq)
+    elbow_rad, shoulder_rad = np.deg2rad(sequence_to_angles(seq))
     elbow_clean_rad, shoulder_clean_rad, t_clean = clean_angles_trajectory(
         elbow_rad,
         shoulder_rad,

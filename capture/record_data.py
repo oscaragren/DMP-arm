@@ -36,16 +36,16 @@ POSE_KEYPOINT_NAMES = {
 
 @dataclass(frozen=True)
 class RecordConfig:
-    fps: float = 30.0
-    width: int = 640 # Stereo needs this
-    height: int = 480 # Stereo needs this
+    fps: float = 25.0
+    width: int = 640#1280
+    height: int = 480# 720
     record_duration_sec: float = 8.0
     pre_record_delay_sec: float = 3.0
     n_frames: Optional[int] = None
     model_path: str = "capture/pose_landmarker_heavy.task"
-    patch: int = 5 
+    patch: int = 3 
     min_z: float = 0.0
-    max_z: float = 10.0
+    max_z: float = 3.0
     show_window: bool = True
     show_depth: bool = False
     window_name: str = "Recording"
@@ -84,7 +84,7 @@ def _depth_at(depth_mm: np.ndarray, u: float, v: float, *, patch: int) -> Option
     return float(np.median(roi)) / 1000.0
 
 
-def record_data(*, args, trial_dir: str | Path) -> bool:
+def record_data(*, args, trial_dir: str | Path, trial: int) -> bool:
     """
     Record one trial into `trial_dir`.
 
@@ -126,7 +126,7 @@ def record_data(*, args, trial_dir: str | Path) -> bool:
     right_socket = dai.CameraBoardSocket.CAM_C
 
     rgb_size = (int(cfg.width), int(cfg.height))
-
+    stereo_size = (640, 480)
     # MediaPipe Pose Landmarker (Tasks API)
     BaseOptions = mp.tasks.BaseOptions
     PoseLandmarker = mp.tasks.vision.PoseLandmarker
@@ -169,8 +169,8 @@ def record_data(*, args, trial_dir: str | Path) -> bool:
         sync.setSyncThreshold(timedelta(seconds=1 / (2 * max(1.0, cfg.fps))))
 
         video_stream = cam_rgb.requestOutput(size=rgb_size, fps=float(cfg.fps), enableUndistortion=True)
-        left.requestOutput(size=rgb_size, fps=float(cfg.fps)).link(stereo.left)
-        right.requestOutput(size=rgb_size, fps=float(cfg.fps)).link(stereo.right)
+        left.requestOutput(size=stereo_size, fps=float(cfg.fps)).link(stereo.left)
+        right.requestOutput(size=stereo_size, fps=float(cfg.fps)).link(stereo.right)
 
         video_stream.link(stereo.inputAlignTo)
         video_stream.link(sync.inputs["rgb"])
@@ -329,6 +329,7 @@ def record_data(*, args, trial_dir: str | Path) -> bool:
     meta = {
         "subject": int(getattr(args, "subject", -1)) if getattr(args, "subject", None) is not None else None,
         "motion": getattr(args, "motion", None),
+        "trial": trial,
         "trial_dir": str(trial_dir),
         "shape": [int(x) for x in seq.shape],
         "keypoint_names": [POSE_KEYPOINT_NAMES[i] for i in POSE_KEYPOINT_IDS],
@@ -352,4 +353,3 @@ def record_data(*, args, trial_dir: str | Path) -> bool:
         json.dump(meta, f, indent=2)
 
     return True
-

@@ -23,7 +23,7 @@ from dmp.dmp import (
     canonical_phase,
 )
 from kinematics.joint_dynamics import smooth_angles_deg, validate_joint_trajectory_deg
-from mapping.sequence_to_angles import sequence_to_angles_rad
+from kinematics.simple_kinematics import get_angles as get_left_arm_angles_deg
 from vis.trial_naming import trial_prefix
 
 
@@ -260,18 +260,15 @@ def plot_dmp_single(
     meta: dict,
     out_path: Path,
     title_suffix: str,
-    *,
-    units: str = "deg",
 ) -> None:
     """
 
     Args:
-        q_demo: np.ndarray: the demonstrated trajectory
-        q_gen: np.ndarray: the generated trajectory
+        q_demo: np.ndarray: the demonstrated trajectory (degrees)
+        q_gen: np.ndarray: the generated trajectory (degrees)
         meta: dict: the metadata
         out_path: Path: the path to save the plot
         title_suffix: str: the suffix for the title
-        units: str: the units to use for the plot
     """
     joint_names = [
         "Elbow flexion",
@@ -288,11 +285,11 @@ def plot_dmp_single(
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
     axes = axes.flatten()
-    ylab = _angle_ylabel(units)
+    ylab = "Angle (deg)"
     for j in range(4):
         ax = axes[j]
-        ax.plot(t_demo, _angles_in_units(q_demo[:, j], units), color=colors_demo[j], linewidth=1.5, label="Demo")
-        ax.plot(t_gen, _angles_in_units(q_gen[:, j], units), color=colors_gen[j], linestyle="--", linewidth=1.2, label="DMP")
+        ax.plot(t_demo, q_demo[:, j], color=colors_demo[j], linewidth=1.5, label="Demo")
+        ax.plot(t_gen, q_gen[:, j], color=colors_gen[j], linestyle="--", linewidth=1.2, label="DMP")
         ax.set_ylabel(ylab)
         ax.set_title(joint_names[j])
         ax.legend(loc="upper right")
@@ -570,7 +567,16 @@ def load_trial_left_arm_sequence(trial_dir: Path) -> tuple[np.ndarray, np.ndarra
 def plot_left_arm_angles_from_trial(trial_dir: Path, out_path: Path | None = None) -> Path:
     """Load trial sequence, compute angles, plot, and save angles.npz alongside."""
     seq, t, meta = load_trial_left_arm_sequence(trial_dir)
-    elbow_rad, shoulder_rad = sequence_to_angles_rad(seq)
+    if seq.shape[1] < 6:
+        raise ValueError(
+            "Expected seq with N>=6 keypoints for trunk frame (LS, LE, LW, RS, LH, RH) "
+            f"when using kinematics/simple_kinematics.py, got {seq.shape}. "
+            "Re-record/re-process to include hips, or update the kinematics method to support N=4."
+        )
+
+    angles_deg = get_left_arm_angles_deg(seq)  # (T,4) deg: [elbow, sh_flex, sh_abd, sh_lat/med_rot]
+    elbow_rad = np.deg2rad(angles_deg[:, 0])
+    shoulder_rad = np.deg2rad(angles_deg[:, 1:4])
     elbow_deg = np.degrees(elbow_rad)
     shoulder_deg = np.degrees(shoulder_rad)
 
@@ -592,7 +598,6 @@ def plot_left_arm_angles_from_trial(trial_dir: Path, out_path: Path | None = Non
         shoulder_deg=shoulder_deg,
     )
     return out_path
-
 
 def load_angles_demo(trial_dir: Path, source: str = "auto") -> np.ndarray:
     """Load elbow+shoulder angles; return (T,4) radians, finite rows only."""
@@ -646,7 +651,6 @@ def load_angles_demo(trial_dir: Path, source: str = "auto") -> np.ndarray:
         raise ValueError(f"Not enough valid samples after cleaning: {q_demo.shape}")
     return q_demo
 
-
 def plot_dmp_trajectory(trial_dir: Path, out_path: Path, n_basis: int = 15, angles_source: str = "auto") -> None:
     """Fit DMP from trial angles, rollout, and plot demo vs generated."""
     q_demo = load_angles_demo(trial_dir, source=angles_source)
@@ -668,7 +672,13 @@ def plot_dmp_trajectory(trial_dir: Path, out_path: Path, n_basis: int = 15, angl
     report = validate_joint_trajectory_deg(np.degrees(q_gen), dt, name="DMP rollout (deg)")
     print(report.reason)
 
-    plot_dmp_single(q_demo, q_gen, _load_meta(trial_dir), out_path, title_suffix=f"{angles_source}, n_basis={n_basis}")
+    plot_dmp_single(
+        np.degrees(q_demo),
+        np.degrees(q_gen),
+        _load_meta(trial_dir),
+        out_path,
+        title_suffix=f"{angles_source}, n_basis={n_basis}",
+    )
 
 
 def forcing_target_from_trajectory(

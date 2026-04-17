@@ -59,6 +59,7 @@ def _shoulder_flexion(seq: np.ndarray) -> np.ndarray:
     # Define rotation matrix from world frame to trunk frame
     R_trunk = _get_trunk_rotation_matrix(seq)
     upper_arm_trunk = np.einsum("tij,tj->ti", R_trunk, upper_arm) # Equivalent to R_trunk.T @ upper_arm (NOTE: maybe other way around)
+    # Change from tij -> tji to get R^T instead of R
     
     # Get angle in yz-plane (trunk frame)
     upper_arm_trunk_z = upper_arm_trunk[:, 2]
@@ -177,8 +178,8 @@ def _get_trunk_rotation_matrix(seq: np.ndarray) -> np.ndarray:
     """
     Get the trunk rotation matrix.
     """
-    if seq.ndim != 3 or seq.shape[2] != 3 or seq.shape[1] < 4:
-        raise ValueError(f"Expected seq shape (T, N>=4, 3), got {seq.shape}")
+    if seq.ndim != 3 or seq.shape[2] != 3 or seq.shape[1] < 6:
+        raise ValueError(f"Expected seq shape (T, N>=6, 3), got {seq.shape}")
     LS = np.asarray(seq[:, 0, :], dtype=np.float64) # Left Shoulder
     RS = np.asarray(seq[:, 3, :], dtype=np.float64) # Right Shoulder
     LH = np.asarray(seq[:, 4, :], dtype=np.float64) # Left Hip
@@ -187,7 +188,9 @@ def _get_trunk_rotation_matrix(seq: np.ndarray) -> np.ndarray:
     # Define centers
     C_s = 0.5 * (LS + RS) # Shoulder center
     C_h = 0.5 * (LH + RH) # Hip center
-
+    # Hip center: assume same y as right hip and same x as shoulder center.
+    # (z taken from right hip to preserve depth without needing left hip)
+    #C_h = np.stack([C_s[:, 0], RH[:, 1], RH[:, 2]], axis=1)
     # Define trunk vectors and normalize
     x_trunk_norm, _ = _normalize_rows(LS - RS)
     y_temp, _ = _normalize_rows(C_s - C_h)
@@ -217,6 +220,8 @@ def _normalize_rows(v: np.ndarray, eps: float = 1e-8) -> tuple[np.ndarray, np.nd
 def get_angles(seq: np.ndarray) -> np.ndarray:
     """
     Get the angles for the left arm.
+
+    seq: (T, 6, 3) with [left_shoulder, left_elbow, left_wrist, right_shoulder, left_hip, right_hip] in meters
     """
     if seq.ndim != 3 or seq.shape[2] != 3 or seq.shape[1] < 4:
         raise ValueError(f"Expected seq shape (T, N>=4, 3), got {seq.shape}")
