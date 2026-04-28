@@ -21,6 +21,7 @@ class DMPModel:
     beta_transformation: float
     tau: float
     n_joints: int
+    curvature_weights: np.ndarray # shape: (n_joints, n_basis_functions)
 
 def _rbf_normalized(x: np.ndarray, centers: np.ndarray, widths: np.ndarray) -> np.ndarray:
     """Compute Gaussian RBF activations normalized row-wise."""
@@ -150,6 +151,110 @@ def estimate_derivatives(
         savgol_window_length=savgol_window_length,
         savgol_polyorder=savgol_polyorder,
     )
+
+def curvature_coupling(q, g, x, centers, widths, curvature_weights):
+    """Curvature coupling function
+    Args:
+        q: current joint position, shape (n_joints,)
+        g: goal joint position, shape (n_joints,)
+        x: canonical phase, scalar (works as a phase gate)
+        centers: centers, shape (n_basis,)
+        widths: widths, shape (n_basis,)
+        curvature_weights: shape (n_joints, n_basis)
+    Returns:
+        curvature_coupling: shape (n_joints,)
+    """
+    psi = np.exp(-widths * (x - centers) ** 2)
+    psi_norm = psi / (psi.sum() + 1e-10)
+
+    curvature_direction = curvature_weights @ psi_norm
+
+    diff = g - q
+    norm = np.linalg.norm(diff)
+
+    if norm < 1e-5:
+        return np.zeros_like(q)
+
+    e = diff / norm
+    P_perp = np.eye(q.shape[0]) - np.outer(e, e) # TODO: Check that q.shape[0] is the number of joints
+    
+    C_curv = x * (P_perp @ curvature_direction)
+    return C_curv
+
+def learn_curvature_weights_from_demo(
+    demo: np.ndarray,
+    model: DMPModel,
+    dt: float,
+    ridge_lambda: float,
+) -> np.ndarray:
+    """Learn curvature weights from a demo."""
+    T, n_joints = demo.shape
+    n_basis = model.centers.shape[0]
+
+    q0 = demo[0]
+    g = demo[-1]
+    tau = model.tau
+
+    dq = np.zeros_like(demo)
+    ddq = np.zeros_like(demo)
+
+    for joint in range(n_joints):
+        dq[:, joint], ddq[:, joint] = estimate_derivatives(
+            demo[:, joint],
+            dt=dt,
+            derivative_method="savgol",
+            savgol_window_length=11,
+            savgol_polyorder=3,
+        )
+
+        Phi_rows, Y_rows = [], []
+
+        for k in range(T):
+            t = k * dt
+            x = canonical_phase(np.array([t]), tau=tau, alpha_canonical=model.alpha_canonical)
+            x = float(x)
+
+            q = demo[k]
+            dq_k = dq[k]
+            ddq_k = ddq[k]
+
+            psi = np.exp(-model.widths * (x - model.centers) ** 2)
+            psi_norm = psi / (psi.sum() + 1e-10)
+            
+            f = x * (model.weights @ psi_norm)
+
+            baseline_numerator = (
+                model.alpha_transformation * model.beta_transformation * (g - q) - model.alpha_transformation * dq_k + (g - q0) * f
+            )
+
+            observed_numerator = tau**2 * ddq_k
+
+            C_target = observed_numerator - baseline_numerator
+
+            diff = g-q
+            norm = np.linalg.norm(diff)
+            if norm < 1e-5:
+                continue
+            e = diff / norm
+            P_perp = np.eye(q.shape[0]) - np.outer(e, e) # TODO: Check that q.shape[0] is the number of joints
+            
+            row_blocks = []
+            for i in range(n_basis):
+                row_blocks.append(x * psi_norm[i] * P_perp)
+
+            Phi_k = np.concatenate(row_blocks, axis=1)
+            Phi_rows.append(Phi_k)
+            Y_rows.append(C_target)
+
+            
+        Phi = np.vstack(Phi_rows)
+        Y = np.concatenate(Y_rows)
+
+        A = Phi.T @ Phi + ridge_lambda * np.eye(Phi.shape[1])
+        b = Phi.T @ Y
+        c_flat = np.linalg.solve(A, b)
+        curvature_weights = c_flat.reshape(n_basis, n_joints).T
+        return curvature_weights
 
 def _compute_f_target(
     q_joint: np.ndarray,
@@ -302,6 +407,29 @@ def fit(
         savgol_polyorder=savgol_polyorder,
     )
 
+    base_model = DMPModel(
+        weights=weights,
+        centers=centers,
+        widths=widths,
+        alpha_canonical=alpha_canonical,
+        alpha_transformation=alpha_transformation,
+        beta_transformation=beta_transformation,
+        tau=tau,
+        n_joints=n_joints,
+        curvature_weights=np.zeros((n_joints, n_basis_functions)),
+    )
+
+    curvature_weights_all = [
+        learn_curvature_weights_from_demo(
+            demo=demo,
+            model=base_model,
+            dt=dt,
+            ridge_lambda=ridge_lambda,
+        )
+        for demo in demos
+    ]
+    curvature_weights = np.mean(curvature_weights_all, axis=0)
+
     # 5. Return the model
     return DMPModel(
         weights=weights,
@@ -312,6 +440,7 @@ def fit(
         beta_transformation=beta_transformation,
         tau=tau,
         n_joints=n_joints,
+        curvature_weights=curvature_weights,
     )
 
 def rollout_simple(model: DMPModel,
@@ -361,6 +490,40 @@ def rollout_simple(model: DMPModel,
             q[joint] += dq[joint] * dt
 
         # 3. Update the trajectory and time
+        q_gen[k] = q
+        t += dt
+
+    return q_gen
+
+def rollout_simple_with_coupling(model: DMPModel,
+                          q0: np.ndarray,
+                          g: np.ndarray,
+                          tau: float,
+                          dt: float) -> np.ndarray:
+    """
+    Rollout a DMP with coupling.
+    """
+    n_steps = int(tau / dt) + 1
+    q_gen = np.zeros((n_steps, model.n_joints))
+    q = q0.copy().astype(float)
+    dq = np.zeros_like(q)
+    q_gen[0] = q
+    t = 0.0
+    for k in range(1, n_steps):
+
+        x = canonical_phase(t, tau=tau, alpha_canonical=model.alpha_canonical)
+        
+        psi = np.exp(-model.widths * (x - model.centers) ** 2)
+        psi_norm = psi / (psi.sum() + 1e-10)
+        
+        f = x * (model.weights @ psi_norm)
+        
+        if model.curvature_weights is not None:
+            C_curv = curvature_coupling(q, g, x, model.centers, model.widths, model.curvature_weights)
+
+        ddq = (model.alpha_transformation * model.beta_transformation * (g - q) - model.alpha_transformation * dq + (g - q0) * f + C_curv) / (tau**2)
+        dq += ddq * dt
+        q += dq * dt
         q_gen[k] = q
         t += dt
 
