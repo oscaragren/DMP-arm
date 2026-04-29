@@ -266,7 +266,7 @@ def _compute_f_target(
     diff_g_q0_eps: float,
     savgol_window_length: int,
     savgol_polyorder: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, float]: 
     """
     Compute DMP forcing target for one joint plus diagnostics.
 
@@ -293,7 +293,7 @@ def _compute_f_target(
     ) / scale
     return f_target, dq, ddq, q0_joint, g_joint, g_minus_q0
 
-def _solve_lwr_weights(
+def _solve_lwr_like_weights(
     *,
     demos: List[np.ndarray],
     phi: np.ndarray,
@@ -314,6 +314,8 @@ def _solve_lwr_weights(
     For each joint, it solves:
         (Phi^T Phi + lambda I) w = Phi^T f_target
     aggregated across all demos.
+
+    return: weights, shape (n_joints, n_basis_functions)
     """
     n_demos = len(demos)
     # Phi is shared across demos, so A is the same per demo and can be scaled once.
@@ -348,6 +350,116 @@ def _solve_lwr_weights(
             b += phi.T @ f_target
 
         weights[joint, :] = np.linalg.solve(A_reg, b)
+
+    return weights
+
+def _solve_lwr_weights(
+    phase: np.ndarray,
+    f_target: np.ndarray,
+    centers: np.ndarray,
+    widths: np.ndarray,
+    regularization: float = 1e-8,
+) -> np.ndarray:
+    """
+    Solve DMP forcing-term weights using Locally Weighted Regression (LWR).
+
+    Parameters
+    ----------
+    phase : np.ndarray
+        Canonical phase variable, shape (T,).
+    f_target : np.ndarray
+        Target forcing term, shape (T,) for one joint.
+    centers : np.ndarray
+        RBF centers, shape (N,).
+    widths : np.ndarray
+        RBF widths, shape (N,).
+    regularization : float
+        Small value added to denominator for numerical stability.
+
+    Returns
+    -------
+    weights : np.ndarray
+        Learned LWR weights, shape (N,).
+    """
+
+    phase = np.asarray(phase, dtype=float)
+    f_target = np.asarray(f_target, dtype=float)
+    centers = np.asarray(centers, dtype=float)
+    widths = np.asarray(widths, dtype=float)
+
+    if phase.ndim != 1:
+        raise ValueError("phase must have shape (T,)")
+
+    if f_target.ndim != 1:
+        raise ValueError("f_target must have shape (T,)")
+
+    if phase.shape[0] != f_target.shape[0]:
+        raise ValueError("phase and f_target must have the same length")
+
+    n_basis = centers.shape[0]
+    weights = np.zeros(n_basis, dtype=float)
+
+    for i in range(n_basis):
+        psi_i = np.exp(-widths[i] * (phase - centers[i]) ** 2)
+
+        numerator = np.sum(psi_i * phase * f_target)
+        denominator = np.sum(psi_i * phase ** 2) + regularization
+
+        weights[i] = numerator / denominator
+
+    return weights
+
+def _solve_lwr_weights_multi(
+    phase: np.ndarray,
+    f_target: np.ndarray,
+    centers: np.ndarray,
+    widths: np.ndarray,
+    regularization: float = 1e-8,
+) -> np.ndarray:
+    """
+    Solve DMP forcing-term weights using LWR for multiple joints.
+
+    Parameters
+    ----------
+    phase : np.ndarray
+        Shape (T,).
+    f_target : np.ndarray
+        Shape (T, D), where D is number of joints.
+    centers : np.ndarray
+        Shape (N,).
+    widths : np.ndarray
+        Shape (N,).
+
+    Returns
+    -------
+    weights : np.ndarray
+        Shape (D, N).
+    """
+
+    phase = np.asarray(phase, dtype=float)
+    f_target = np.asarray(f_target, dtype=float)
+
+    if f_target.ndim == 1:
+        return _solve_lwr_weights(
+            phase, f_target, centers, widths, regularization
+        )[None, :]
+
+    if f_target.shape[0] != phase.shape[0]:
+        raise ValueError("f_target must have shape (T, D)")
+
+    n_joints = f_target.shape[1]
+    n_basis = len(centers)
+
+    weights = np.zeros((n_joints, n_basis), dtype=float)
+
+    for joint_idx in range(n_joints):
+        weights[joint_idx, :] = _solve_lwr_weights(
+            phase=phase,
+            f_target=f_target[:, joint_idx],
+            centers=centers,
+            widths=widths,
+            regularization=regularization,
+        )
 
     return weights
 
@@ -392,7 +504,7 @@ def fit(
     savgol_window_length = 11 #11
     savgol_polyorder = 3 #3
 
-    weights = _solve_lwr_weights(
+    weights = _solve_lwr_like_weights(
         demos=demos,
         phi=phi,
         n_joints=n_joints,
