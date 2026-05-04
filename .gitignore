@@ -67,3 +67,6 @@ public/
 # Invalid joint configurations
 tests/*.csv
 tests/*.txt
+
+# Results
+results/
