@@ -1,4 +1,4 @@
-# DMP-Master-Thesis
+# DMP-Arm
 
 Master thesis by Oscar Ågren: **personalization using Dynamic Movement Primitives (DMP) and embedded implementation evaluation**.
 
