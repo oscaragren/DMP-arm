@@ -1,11 +1,7 @@
 import numpy as np
 from dmp.dmp import DMPModel
 import os
-from dmp.dmp import rollout_simple, rollout_simple_with_coupling
-from kinematics.simple_kinematics import get_angles
-from kinematics.clean_angles import _lowpass_angles
-from analyze_data import _load_raw_seq_t, _load_meta, _interpolate_nan
-from pathlib import Path
+from dmp.dmp import rollout_simple_with_coupling
 from mapping.retarget import JOINT_LIMITS_DEG
 
 def get_trajectories(subject: int = 10):
