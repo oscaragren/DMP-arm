@@ -366,12 +366,22 @@ def save_curvature_weights_npz(out_dir: Path, *, curvature_weights: np.ndarray, 
     np.savez(out_dir / filename, curvature_weights=np.asarray(curvature_weights, dtype=np.float64))
 
 
-def save_rollout_npz(out_dir: Path, *, q_gen_deg: np.ndarray, t: np.ndarray, dt: float, filename: str) -> None:
+def save_rollout_npz(
+    out_dir: Path,
+    *,
+    q_gen_deg: np.ndarray,
+    t: np.ndarray,
+    dt: float,
+    filename: str,
+    q_gen_deg_clipped: Optional[np.ndarray] = None,
+) -> None:
     _ensure_dir(out_dir)
     q = np.asarray(q_gen_deg, dtype=np.float64)
+    q_clip = None if q_gen_deg_clipped is None else np.asarray(q_gen_deg_clipped, dtype=np.float64)
     np.savez(
         out_dir / filename,
         q_gen_deg=q,
+        q_gen_deg_clipped=q_clip,
         t=np.asarray(t, dtype=np.float64),
         dt=float(dt),
         q0=q[0],
@@ -841,7 +851,6 @@ def main() -> None:
 
             # 4) Convert to angles (degrees), clip to new limits
             q_demo = sequence_to_angles_deg(seq_f)
-            q_demo = _clip_angles_deg(q_demo)
             valid = np.all(np.isfinite(q_demo), axis=1)
             q_demo = q_demo[valid]
             t_demo = t[valid]
@@ -877,13 +886,21 @@ def main() -> None:
                 n_joints=model_trial.n_joints,
                 curvature_weights=np.zeros_like(model_trial.curvature_weights),
             )
-            q_gen_base = rollout_simple(model_base, q_demo[0], q_demo[-1], tau=float(args.tau), dt=dt)
-            q_gen_base = _clip_angles_deg(q_gen_base)
+            # Keep an unclipped rollout for evaluation; keep a clipped copy for saving/plotting.
+            q_gen_base_unclipped = rollout_simple(model_base, q_demo[0], q_demo[-1], tau=float(args.tau), dt=dt)
+            q_gen_base_clipped = _clip_angles_deg(q_gen_base_unclipped)
 
             # 7) Save angles, model, rollout
             save_angles_npz(out_dir, angles_deg=q_demo, t=t_demo, meta=meta, dt=dt)
             save_dmp_model_npz(out_dir, model=model_trial)
-            save_rollout_npz(out_dir, q_gen_deg=q_gen_base, t=t_demo, dt=dt, filename="dmp_rollout_base.npz")
+            save_rollout_npz(
+                out_dir,
+                q_gen_deg=q_gen_base_unclipped,
+                q_gen_deg_clipped=q_gen_base_clipped,
+                t=t_demo,
+                dt=dt,
+                filename="dmp_rollout_base.npz",
+            )
 
             # 9) Plots
             plot_3d_trajectory(seq_f, t, meta, out_dir / "trajectory_3d.png")
@@ -898,7 +915,7 @@ def main() -> None:
             )
             plot_dmp_single(
                 q_demo=q_demo,
-                q_gen=q_gen_base,
+                q_gen=q_gen_base_unclipped,
                 meta=meta,
                 title_suffix="dmp_base",
                 out_path=out_dir / "dmp_base.png",
@@ -952,7 +969,12 @@ def main() -> None:
             dt = float(np.atleast_1d(angles_npz["dt"])[0]) if "dt" in angles_npz.files else float(args.tau) / (q_demo.shape[0] - 1)
 
             base_npz = np.load(trial_dir / "dmp_rollout_base.npz", allow_pickle=False)
-            q_base = np.asarray(base_npz["q_gen_deg"], dtype=float)
+            q_base = np.asarray(base_npz["q_gen_deg"], dtype=float)  # unclipped rollout (preferred for metrics)
+            q_base_plot = (
+                np.asarray(base_npz["q_gen_deg_clipped"], dtype=float)
+                if "q_gen_deg_clipped" in base_npz.files and base_npz["q_gen_deg_clipped"] is not None
+                else q_base
+            )
 
             model_npz = np.load(trial_dir / "dmp_model.npz", allow_pickle=False)
             model = DMPModel(
@@ -990,21 +1012,96 @@ def main() -> None:
             q_personalized = rollout_simple_with_coupling(
                 model_personalized, q_demo[0], q_demo[-1], tau=float(args.tau), dt=dt
             )
-            q_personalized = _clip_angles_deg(q_personalized)
-            save_rollout_npz(trial_dir, q_gen_deg=q_personalized, t=np.asarray(angles_npz["t"], dtype=float), dt=dt, filename="dmp_rollout_personalized.npz")
+            q_personalized_unclipped = np.asarray(q_personalized, dtype=float)
+            q_personalized_clipped = _clip_angles_deg(q_personalized_unclipped)
+            save_rollout_npz(
+                trial_dir,
+                q_gen_deg=q_personalized_unclipped,
+                q_gen_deg_clipped=q_personalized_clipped,
+                t=np.asarray(angles_npz["t"], dtype=float),
+                dt=dt,
+                filename="dmp_rollout_personalized.npz",
+            )
 
             # Plots
             meta = _load_meta(Path(r["raw_trial_dir"]))
             plot_dmp_single(
                 q_demo=q_demo,
-                q_gen=q_personalized,
+                q_gen=q_personalized_unclipped,
                 meta=meta,
                 title_suffix="dmp_personalized",
                 out_path=trial_dir / "dmp_personalized.png",
             )
 
+            # Also save a plot where the *clipped* base + personalized DMPs are shown together.
+            # This is useful for visualizing what would be sent to the robot/controller.
+            def _plot_dmp_clipped_base_vs_personalized(
+                *,
+                q_demo_deg: np.ndarray,
+                q_base_clipped_deg: np.ndarray,
+                q_personalized_clipped_deg: np.ndarray,
+                meta: dict,
+                out_path: Path,
+            ) -> None:
+                import matplotlib.pyplot as plt
+
+                joint_names = [
+                    "Elbow flexion",
+                    "Shoulder flexion",
+                    "Shoulder abduction",
+                    "Shoulder internal rotation",
+                ]
+
+                tau = 1.0
+                t_demo = np.linspace(0.0, tau, q_demo_deg.shape[0])
+                t_base = np.linspace(0.0, tau, q_base_clipped_deg.shape[0])
+                t_pers = np.linspace(0.0, tau, q_personalized_clipped_deg.shape[0])
+
+                fig, axes = plt.subplots(2, 2, figsize=(10, 8), sharex=True)
+                axes = axes.flatten()
+                for j in range(4):
+                    ax = axes[j]
+                    ax.plot(t_demo, q_demo_deg[:, j], color="#3498db", linewidth=1.5, label="Demo")
+                    ax.plot(t_base, q_base_clipped_deg[:, j], color="#F58518", linestyle="--", linewidth=1.2, label="Base (clipped)")
+                    ax.plot(
+                        t_pers,
+                        q_personalized_clipped_deg[:, j],
+                        color="#54A24B",
+                        linestyle="--",
+                        linewidth=1.2,
+                        label="Personalized (clipped)",
+                    )
+                    ax.set_title(joint_names[j])
+                    ax.set_ylabel("Angle (deg)")
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(loc="upper right", fontsize=8)
+                axes[-1].set_xlabel("Time (normalized)")
+
+                subject = meta.get("subject", "?")
+                motion = meta.get("motion", "?")
+                trial = meta.get("trial", "?")
+                fig.suptitle(
+                    f"DMP trajectories (clipped) — subject {subject}, {motion}, trial {trial}",
+                    fontsize=11,
+                )
+                plt.tight_layout()
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                plt.savefig(out_path, dpi=140)
+                plt.close(fig)
+
+            # Prefer base clipped from saved artifact when present (matches what gets exported).
+            q_base_clipped_for_plot = np.asarray(q_base_plot, dtype=float)
+            _plot_dmp_clipped_base_vs_personalized(
+                q_demo_deg=q_demo,
+                q_base_clipped_deg=q_base_clipped_for_plot,
+                q_personalized_clipped_deg=q_personalized_clipped,
+                meta=meta,
+                out_path=trial_dir / "dmp_clipped_base_vs_personalized.png",
+            )
+
+            # Metrics should be computed on the *unclipped* DMP outputs (as requested).
             metrics_base = evaluate_pair(q_demo, q_base, dt=dt)
-            metrics_pers = evaluate_pair(q_demo, q_personalized, dt=dt)
+            metrics_pers = evaluate_pair(q_demo, q_personalized_unclipped, dt=dt)
 
             record = {
                 "trial_id": asdict(tid),
