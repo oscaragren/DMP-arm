@@ -56,6 +56,10 @@ class ClassicalDMPTimingConfig:
     lowpass_cutoff_hz: float = 20.0
     lowpass_order: int = 2
 
+    # Path-progress
+    waypoint_indices: Optional[tuple[int, ...]] = None
+    progress_eps: float = 1e-6
+
     # Outputs
     save_model: bool = True
 
@@ -158,6 +162,64 @@ def _finite_diff_filtered(
     if not np.all(np.isfinite(dq)):
         return np.asarray(qdot_prev, float)
     return (1.0 - float(alpha)) * np.asarray(qdot_prev, float) + float(alpha) * dq
+
+def _path_progress_phase(
+    q_human: np.ndarray,
+    *,
+    waypoints: np.ndarray,
+    active_segment: int,
+    alpha_canonical: float,
+    eps: float = 1e-6,
+) -> tuple[float, float, int, float]:
+    """
+    Estimate progress along a piecewise-linear path.
+
+    waypoints: (M, n_joints)
+      Example: [q_start, q_pickup, q_place, q_return]
+
+    active_segment:
+      Current segment index. Segment i goes from waypoints[i] to waypoints[i+1].
+
+    Returns:
+      global_progress: [0,1]
+      x: canonical phase
+      active_segment: updated active segment
+      local_progress: [0,1]
+    """
+    q_human = np.asarray(q_human, dtype=float).reshape(-1)
+    waypoints = np.asarray(waypoints, dtype=float)
+
+    n_segments = waypoints.shape[0] - 1
+    active_segment = int(np.clip(active_segment, 0, n_segments - 1))
+
+    a = waypoints[active_segment]
+    b = waypoints[active_segment + 1]
+    d = b - a
+
+    denom = float(np.dot(d, d)) + float(eps)
+
+    local_progress = float(np.dot(q_human - a, d) / denom)
+    local_progress = float(np.clip(local_progress, 0.0, 1.0))
+
+    # Move to next segment when the current one is nearly completed
+    if local_progress >= 0.98 and active_segment < n_segments - 1:
+        active_segment += 1
+
+        a = waypoints[active_segment]
+        b = waypoints[active_segment + 1]
+        d = b - a
+        denom = float(np.dot(d, d)) + float(eps)
+
+        local_progress = float(np.dot(q_human - a, d) / denom)
+        local_progress = float(np.clip(local_progress, 0.0, 1.0))
+
+    global_progress = (active_segment + local_progress) / float(n_segments)
+    global_progress = float(np.clip(global_progress, 0.0, 1.0))
+
+    x = float(math.exp(-float(alpha_canonical) * global_progress))
+    x = float(np.clip(x, 0.0, 1.0))
+
+    return global_progress, x, active_segment, local_progress
 
 
 def _human_progress_phase(
@@ -318,7 +380,20 @@ def run_classical_dmp_timing_experiment(
 
     q_start = np.asarray(q_demo[0], dtype=float)
     q_goal = np.asarray(q_demo[-1], dtype=float)
+    if config.waypoint_indices is None:
+        waypoint_indices = (0, q_demo.shape[0] // 3, 2 * q_demo.shape[0] // 3, -1)
+    else:
+        waypoint_indices = config.waypoint_indices
 
+    waypoint_indices = tuple(
+        idx if idx >= 0 else q_demo.shape[0] + idx
+        for idx in waypoint_indices
+    )
+
+    waypoints = np.asarray(q_demo[list(waypoint_indices)], dtype=float)
+
+    if waypoints.shape[0] < 2:
+        raise ValueError("At least two waypoints are required for path-progress phase estimation.")
     # --------------------------
     # ONLINE PHASE (timed loop)
     # --------------------------
@@ -363,6 +438,8 @@ def run_classical_dmp_timing_experiment(
     next_tick_ns = time.monotonic_ns()
     loop_start_ns = next_tick_ns
     prev_iter_ns: Optional[int] = None
+
+    active_segment = 0
 
     for i in range(n_iters):
         iter_sched_ns = next_tick_ns
@@ -445,8 +522,16 @@ def run_classical_dmp_timing_experiment(
             progress, x = _human_progress_phase(
                 q_human, q_start=q_start, q_goal=q_goal, alpha_canonical=float(config.alpha_canonical)
             )
+        elif config.phase_mode == "path-progress":
+            progress, x, active_segment, local_progress = _path_progress_phase(
+                q_human,
+                waypoints=waypoints,
+                active_segment=active_segment,
+                alpha_canonical=float(config.alpha_canonical),
+                eps=float(config.progress_eps),
+            )
         else:
-            raise ValueError("phase_mode must be 'time' or 'human-progress'")
+            raise ValueError("phase_mode must be 'time', 'human-progress', or 'path-progress'")
         x = float(np.clip(x, 0.0, 1.0))
         phase_estimation_ms = (time.perf_counter_ns() - t0) * 1e-6
 
