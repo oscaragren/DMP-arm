@@ -70,10 +70,11 @@ class ClassicalDMPTimingConfig:
     rt_fps: float = 25.0
     rt_width: int = 640
     rt_height: int = 480
-    rt_model_path: str = "models/pose_landmarker_lite.task"
+    # DepthAI YOLO-pose NNArchive (tar.xz) used by `capture/convert.py`
+    rt_model_path: str = "models/yolo11n-pose.rvc2.tar.xz"
     rt_patch: int = 3
-    rt_min_z: float = 0.0
-    rt_max_z: float = 3.0
+    rt_min_z: float = 0.15
+    rt_max_z: float = 4.0
     rt_show_window: bool = False
     rt_show_depth: bool = False
     rt_window_name: str = "RT Pose"
@@ -470,111 +471,39 @@ def run_classical_dmp_timing_experiment(
     online_fps = float(config.rt_fps) if use_realtime else float(fps)
 
     # Real-time resources (initialized once, used inside the loop).
-    rt_device = None
-    rt_pipeline = None
-    rt_queue = None
-    rt_landmarker = None
-    rt_cv2 = None
-    rt_mp = None
+    rt_pose = None
     rt_writer = None
-    rt_fx = rt_fy = rt_cx = rt_cy = None
-    rt_last_ts_ms = -1
-
-    def _rt_deproject(u: float, v: float, z_m: float) -> tuple[float, float, float]:
-        assert rt_fx is not None and rt_fy is not None and rt_cx is not None and rt_cy is not None
-        x = (u - float(rt_cx)) * z_m / float(rt_fx)
-        y = (v - float(rt_cy)) * z_m / float(rt_fy)
-        return float(x), float(y), float(z_m)
-
-    def _rt_depth_at(depth_mm: np.ndarray, u: float, v: float, *, patch: int) -> Optional[float]:
-        h, w = depth_mm.shape[:2]
-        u0, v0 = int(np.clip(u, 0, w - 1)), int(np.clip(v, 0, h - 1))
-        r = max(0, int(patch) // 2)
-        x1, x2 = max(0, u0 - r), min(w, u0 + r + 1)
-        y1, y2 = max(0, v0 - r), min(h, v0 + r + 1)
-        roi = depth_mm[y1:y2, x1:x2].astype(np.float32)
-        roi = roi[roi > 0]
-        if roi.size == 0:
-            return None
-        return float(np.median(roi)) / 1000.0
 
     if use_realtime:
         # Heavy imports only when real-time is used.
         import cv2 as _cv2  # type: ignore
-        import depthai as dai  # type: ignore
-        import mediapipe as mp  # type: ignore
-        from datetime import timedelta
 
-        rt_cv2 = _cv2
-        rt_mp = mp
-
-        rgb_socket = dai.CameraBoardSocket.CAM_A
-        left_socket = dai.CameraBoardSocket.CAM_B
-        right_socket = dai.CameraBoardSocket.CAM_C
+        from capture.rt_camera import RealtimeYoloPose3D, RealtimeYoloPose3DConfig
 
         rgb_size = (int(config.rt_width), int(config.rt_height))
-        stereo_size = (640, 480)
 
-        BaseOptions = mp.tasks.BaseOptions
-        PoseLandmarker = mp.tasks.vision.PoseLandmarker
-        PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
-        RunningMode = mp.tasks.vision.RunningMode
-
-        model_path = Path(config.rt_model_path)
-        if not model_path.exists():
-            model_path = (Path(__file__).resolve().parents[1] / config.rt_model_path).resolve()
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"Pose Landmarker model not found at '{config.rt_model_path}' (also tried '{model_path}')"
+        # NOTE: convert.py defaults are tuned for yolo11n-pose (512x288).
+        # If you want 640x480 RGB, ensure the NNArchive was trained/configured accordingly.
+        rt_pose = RealtimeYoloPose3D(
+            RealtimeYoloPose3DConfig(
+                fps=float(config.rt_fps),
+                rgb_w=int(config.rt_width),
+                rgb_h=int(config.rt_height),
+                model_path=str(config.rt_model_path),
+                depth_patch=int(config.rt_patch),
+                min_z_m=float(config.rt_min_z),
+                max_z_m=float(config.rt_max_z),
+                show_window=bool(config.rt_show_window),
+                show_depth=bool(config.rt_show_depth),
+                window_name=str(config.rt_window_name),
             )
-
-        options = PoseLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=str(model_path)),
-            running_mode=RunningMode.VIDEO,
-            num_poses=1,
-            min_pose_detection_confidence=0.5,
-            min_pose_presence_confidence=0.5,
-            min_tracking_confidence=0.5,
         )
-
-        rt_device = dai.Device()
-        rt_pipeline = dai.Pipeline(rt_device)
-        rt_landmarker = PoseLandmarker.create_from_options(options)
-
-        cam_rgb = rt_pipeline.create(dai.node.Camera).build(rgb_socket)
-        left = rt_pipeline.create(dai.node.Camera).build(left_socket)
-        right = rt_pipeline.create(dai.node.Camera).build(right_socket)
-
-        stereo = rt_pipeline.create(dai.node.StereoDepth)
-        sync = rt_pipeline.create(dai.node.Sync)
-        stereo.setExtendedDisparity(True)
-        sync.setSyncThreshold(timedelta(seconds=1 / (2 * max(1.0, float(config.rt_fps)))))
-
-        video_stream = cam_rgb.requestOutput(size=rgb_size, fps=float(config.rt_fps), enableUndistortion=True)
-        left.requestOutput(size=stereo_size, fps=float(config.rt_fps)).link(stereo.left)
-        right.requestOutput(size=stereo_size, fps=float(config.rt_fps)).link(stereo.right)
-
-        video_stream.link(stereo.inputAlignTo)
-        video_stream.link(sync.inputs["rgb"])
-        stereo.depth.link(sync.inputs["depth_aligned"])
-
-        rt_queue = sync.out.createOutputQueue()
-
-        calib = rt_device.readCalibration()
-        K = calib.getCameraIntrinsics(rgb_socket, rgb_size[0], rgb_size[1])
-        rt_fx, rt_fy, rt_cx, rt_cy = float(K[0][0]), float(K[1][1]), float(K[0][2]), float(K[1][2])
-
-        rt_pipeline.start()
-
-        if bool(config.rt_show_window):
-            rt_cv2.namedWindow(str(config.rt_window_name), rt_cv2.WINDOW_NORMAL)
-            if bool(config.rt_show_depth):
-                rt_cv2.namedWindow(f"{config.rt_window_name} (depth)", rt_cv2.WINDOW_NORMAL)
+        rt_pose.start()
 
         if bool(config.rt_record_video):
             p = Path(config.rt_video_path) if str(config.rt_video_path).strip() else (out_dir / "rt_video.mp4")
-            fourcc = rt_cv2.VideoWriter_fourcc(*"mp4v")
-            rt_writer = rt_cv2.VideoWriter(str(p), fourcc, float(config.rt_fps), rgb_size)
+            fourcc = _cv2.VideoWriter_fourcc(*"mp4v")
+            rt_writer = _cv2.VideoWriter(str(p), fourcc, float(config.rt_fps), rgb_size)
 
     try:
         for i in range(n_iters):
@@ -596,51 +525,9 @@ def run_classical_dmp_timing_experiment(
                 idx = int(i % seq_full.shape[0])
                 frame = np.asarray(seq_full[idx], dtype=np.float64)
             else:
-                assert rt_queue is not None and rt_landmarker is not None and rt_cv2 is not None and rt_mp is not None
-                # Block for a synced rgb+depth sample, then run pose estimation and 3D deprojection.
-                msg_group = rt_queue.getAll()[-1]
-                frame_rgb = msg_group["rgb"]
-                frame_depth = msg_group["depth_aligned"]
-
-                frame_bgr = frame_rgb.getCvFrame()
-                depth_mm = frame_depth.getFrame()
-
-                t_sec = frame_rgb.getTimestampDevice().total_seconds()
-                ts_ms = int(t_sec * 1000)
-                if ts_ms <= rt_last_ts_ms:
-                    ts_ms = rt_last_ts_ms + 1
-                rt_last_ts_ms = ts_ms
-
-                frame_rgb_np = rt_cv2.cvtColor(frame_bgr, rt_cv2.COLOR_BGR2RGB)
-                mp_image = rt_mp.Image(image_format=rt_mp.ImageFormat.SRGB, data=frame_rgb_np)
-                result = rt_landmarker.detect_for_video(mp_image, ts_ms)
-
-                pose_xyz = np.full((len(POSE_KEYPOINT_IDS), 3), np.nan, dtype=np.float64)
-                if result.pose_landmarks and len(result.pose_landmarks) > 0:
-                    pose0 = result.pose_landmarks[0]
-                    h, w = frame_bgr.shape[:2]
-                    for j, idx in enumerate(POSE_KEYPOINT_IDS):
-                        lm = pose0[idx]
-                        u, v = float(lm.x) * w, float(lm.y) * h
-                        z_m = _rt_depth_at(depth_mm, u, v, patch=int(config.rt_patch))
-                        if z_m is None or z_m < float(config.rt_min_z) or z_m > float(config.rt_max_z):
-                            continue
-                        pose_xyz[j] = _rt_deproject(u, v, float(z_m))
-
-                if rt_writer is not None:
-                    rt_writer.write(frame_bgr)
-
-                if bool(config.rt_show_window):
-                    rt_cv2.imshow(str(config.rt_window_name), frame_bgr)
-                    if bool(config.rt_show_depth):
-                        depth_vis = rt_cv2.normalize(depth_mm, None, 0, 255, rt_cv2.NORM_MINMAX, dtype=rt_cv2.CV_8U)
-                        depth_vis = rt_cv2.applyColorMap(depth_vis, rt_cv2.COLORMAP_INFERNO)
-                        rt_cv2.imshow(f"{config.rt_window_name} (depth)", depth_vis)
-                    key = rt_cv2.waitKey(1) & 0xFF
-                    if key == ord("q"):
-                        break
-
-                frame = pose_xyz
+                assert rt_pose is not None
+                pose_xyz = rt_pose.read()
+                frame = np.asarray(pose_xyz, dtype=np.float64)
             pose_ms = (time.perf_counter_ns() - t0) * 1e-6
 
             # Update window
@@ -793,25 +680,8 @@ def run_classical_dmp_timing_experiment(
         except Exception:
             pass
         try:
-            if rt_cv2 is not None and bool(config.rt_show_window):
-                rt_cv2.destroyWindow(str(config.rt_window_name))
-                if bool(config.rt_show_depth):
-                    rt_cv2.destroyWindow(f"{config.rt_window_name} (depth)")
-        except Exception:
-            pass
-        try:
-            if rt_landmarker is not None:
-                rt_landmarker.close()
-        except Exception:
-            pass
-        try:
-            if rt_pipeline is not None:
-                rt_pipeline.stop()
-        except Exception:
-            pass
-        try:
-            if rt_device is not None:
-                rt_device.close()
+            if rt_pose is not None:
+                rt_pose.stop()
         except Exception:
             pass
 

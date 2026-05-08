@@ -32,9 +32,6 @@ capture/output/
 
 # Model weights (downloaded .task files; keep repo small)
 *.task
-!models/pose_landmarker_lite.task
-!models/pose_landmarker_full.task
-!models/pose_landmarker_heavy.task
 
 # IDE and editors
 .idea/
@@ -73,3 +70,7 @@ tests/*.txt
 
 # Results
 results/
+
+# Models
+*.pt
+yolo11n-pose.rvc2.tar.xz
