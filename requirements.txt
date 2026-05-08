@@ -11,4 +11,3 @@ tqdm
 pandas
 openpyxl
 depthai-nodes
-hubai-sdk
