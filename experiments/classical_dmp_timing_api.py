@@ -31,13 +31,13 @@ class ClassicalDMPTimingConfig:
     # DMP params (offline fit only)
     tau: float = 1.0
     dt: float = 0.01
-    n_basis: int = 50
+    n_basis: int = 100
     alpha_canonical: float = 4.0
     alpha_transformation: float = 25.0
     beta_transformation: float = 6.25
 
     # Online phase estimation
-    phase_mode: str = "time"  # "time" | "human-progress"
+    phase_mode: str = "path-progress"  # "time" | "human-progress" | "path-progress"
 
     # Coupling
     coupling_mode: str = "none"  # "none" | "pd"
@@ -62,6 +62,26 @@ class ClassicalDMPTimingConfig:
 
     # Outputs
     save_model: bool = True
+
+    # Pose input (online)
+    pose_input_mode: str = "realtime"  # "replay" | "realtime"
+
+    # Real-time camera/pose settings (only used if pose_input_mode="realtime")
+    rt_fps: float = 25.0
+    rt_width: int = 640
+    rt_height: int = 480
+    rt_model_path: str = "models/pose_landmarker_lite.task"
+    rt_patch: int = 3
+    rt_min_z: float = 0.0
+    rt_max_z: float = 3.0
+    rt_show_window: bool = False
+    rt_show_depth: bool = False
+    rt_window_name: str = "RT Pose"
+    rt_record_video: bool = False
+    rt_video_path: str = ""  # if empty, writes out_dir/"rt_video.mp4"
+
+
+POSE_KEYPOINT_IDS = [11, 13, 15, 12, 23, 24]
 
 
 @dataclass(frozen=True)
@@ -441,172 +461,359 @@ def run_classical_dmp_timing_experiment(
 
     active_segment = 0
 
-    for i in range(n_iters):
-        iter_sched_ns = next_tick_ns
-        now_ns = time.monotonic_ns()
-        schedule_error_ms = (now_ns - iter_sched_ns) * 1e-6
+    pose_mode = str(config.pose_input_mode).strip().lower()
+    use_realtime = pose_mode == "realtime"
+    if pose_mode not in {"replay", "realtime"}:
+        raise ValueError("pose_input_mode must be 'replay' or 'realtime'")
 
-        if prev_iter_ns is None:
-            actual_period_ms = float("nan")
-        else:
-            actual_period_ms = (now_ns - prev_iter_ns) * 1e-6
-        prev_iter_ns = now_ns
+    # For real-time, the online filtering should use the camera FPS rather than demo FPS.
+    online_fps = float(config.rt_fps) if use_realtime else float(fps)
 
-        t_iter0 = time.perf_counter_ns()
+    # Real-time resources (initialized once, used inside the loop).
+    rt_device = None
+    rt_pipeline = None
+    rt_queue = None
+    rt_landmarker = None
+    rt_cv2 = None
+    rt_mp = None
+    rt_writer = None
+    rt_fx = rt_fy = rt_cx = rt_cy = None
+    rt_last_ts_ms = -1
 
-        """
-        TODO:
-        Add capture and pose estimation from capture folder here.
-        Right now we are using the sequence and timestamps from the trial directory.
-        Instead, we should use the capture and pose estimation in real-time.
-        """
-        # 1) Simulated online pose input (1 frame)
-        t0 = time.perf_counter_ns()
-        idx = int(i % seq_full.shape[0])
-        frame = np.asarray(seq_full[idx], dtype=np.float64)
-        pose_ms = (time.perf_counter_ns() - t0) * 1e-6
+    def _rt_deproject(u: float, v: float, z_m: float) -> tuple[float, float, float]:
+        assert rt_fx is not None and rt_fy is not None and rt_cx is not None and rt_cy is not None
+        x = (u - float(rt_cx)) * z_m / float(rt_fx)
+        y = (v - float(rt_cy)) * z_m / float(rt_fy)
+        return float(x), float(y), float(z_m)
 
-        # Update window
-        window.append(frame)
-        if len(window) > W:
-            window.pop(0)
+    def _rt_depth_at(depth_mm: np.ndarray, u: float, v: float, *, patch: int) -> Optional[float]:
+        h, w = depth_mm.shape[:2]
+        u0, v0 = int(np.clip(u, 0, w - 1)), int(np.clip(v, 0, h - 1))
+        r = max(0, int(patch) // 2)
+        x1, x2 = max(0, u0 - r), min(w, u0 + r + 1)
+        y1, y2 = max(0, v0 - r), min(h, v0 + r + 1)
+        roi = depth_mm[y1:y2, x1:x2].astype(np.float32)
+        roi = roi[roi > 0]
+        if roi.size == 0:
+            return None
+        return float(np.median(roi)) / 1000.0
 
-        # 2) Preprocess window (interpolate + lowpass in cartesian space)
-        t0 = time.perf_counter_ns()
-        win = np.stack(window, axis=0)  # (W,K,3)
-        win_i = interpolate_keypoints_cartesian(win)
-        win_f = lowpass_keypoints(
-            win_i, fps=fps, cutoff_hz=float(config.lowpass_cutoff_hz), order=int(config.lowpass_order)
+    if use_realtime:
+        # Heavy imports only when real-time is used.
+        import cv2 as _cv2  # type: ignore
+        import depthai as dai  # type: ignore
+        import mediapipe as mp  # type: ignore
+        from datetime import timedelta
+
+        rt_cv2 = _cv2
+        rt_mp = mp
+
+        rgb_socket = dai.CameraBoardSocket.CAM_A
+        left_socket = dai.CameraBoardSocket.CAM_B
+        right_socket = dai.CameraBoardSocket.CAM_C
+
+        rgb_size = (int(config.rt_width), int(config.rt_height))
+        stereo_size = (640, 480)
+
+        BaseOptions = mp.tasks.BaseOptions
+        PoseLandmarker = mp.tasks.vision.PoseLandmarker
+        PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
+        RunningMode = mp.tasks.vision.RunningMode
+
+        model_path = Path(config.rt_model_path)
+        if not model_path.exists():
+            model_path = (Path(__file__).resolve().parents[1] / config.rt_model_path).resolve()
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Pose Landmarker model not found at '{config.rt_model_path}' (also tried '{model_path}')"
+            )
+
+        options = PoseLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(model_path)),
+            running_mode=RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=0.5,
+            min_pose_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
         )
-        preprocess_ms = (time.perf_counter_ns() - t0) * 1e-6
 
-        # 3) Extract human joint angles (degrees)
-        t0 = time.perf_counter_ns()
-        q_win = sequence_to_angles_deg(win_f)
-        q_win = _clip_angles_deg(q_win)
-        q_human = np.asarray(q_win[-1], dtype=float).reshape(-1) # TODO: Dont understand this. Last frame of the window, used for human joint angles?
-        if not np.all(np.isfinite(q_human)):
-            q_human = q_h_prev.copy() if q_h_prev is not None else q_start.copy()
-        angle_extraction_ms = (time.perf_counter_ns() - t0) * 1e-6
+        rt_device = dai.Device()
+        rt_pipeline = dai.Pipeline(rt_device)
+        rt_landmarker = PoseLandmarker.create_from_options(options)
 
-        # 4) Estimate qdot_human (filtered finite differences)
-        if q_h_prev is None or not np.all(np.isfinite(q_h_prev)):
-            qdot_human = qdot_h_prev.copy()
-        else:
-            qdot_human = _finite_diff_filtered(
-                q_prev=q_h_prev,
-                q_curr=q_human,
-                dt=dt_loop,
-                qdot_prev=qdot_h_prev,
-                alpha=float(config.qdot_alpha),
+        cam_rgb = rt_pipeline.create(dai.node.Camera).build(rgb_socket)
+        left = rt_pipeline.create(dai.node.Camera).build(left_socket)
+        right = rt_pipeline.create(dai.node.Camera).build(right_socket)
+
+        stereo = rt_pipeline.create(dai.node.StereoDepth)
+        sync = rt_pipeline.create(dai.node.Sync)
+        stereo.setExtendedDisparity(True)
+        sync.setSyncThreshold(timedelta(seconds=1 / (2 * max(1.0, float(config.rt_fps)))))
+
+        video_stream = cam_rgb.requestOutput(size=rgb_size, fps=float(config.rt_fps), enableUndistortion=True)
+        left.requestOutput(size=stereo_size, fps=float(config.rt_fps)).link(stereo.left)
+        right.requestOutput(size=stereo_size, fps=float(config.rt_fps)).link(stereo.right)
+
+        video_stream.link(stereo.inputAlignTo)
+        video_stream.link(sync.inputs["rgb"])
+        stereo.depth.link(sync.inputs["depth_aligned"])
+
+        rt_queue = sync.out.createOutputQueue()
+
+        calib = rt_device.readCalibration()
+        K = calib.getCameraIntrinsics(rgb_socket, rgb_size[0], rgb_size[1])
+        rt_fx, rt_fy, rt_cx, rt_cy = float(K[0][0]), float(K[1][1]), float(K[0][2]), float(K[1][2])
+
+        rt_pipeline.start()
+
+        if bool(config.rt_show_window):
+            rt_cv2.namedWindow(str(config.rt_window_name), rt_cv2.WINDOW_NORMAL)
+            if bool(config.rt_show_depth):
+                rt_cv2.namedWindow(f"{config.rt_window_name} (depth)", rt_cv2.WINDOW_NORMAL)
+
+        if bool(config.rt_record_video):
+            p = Path(config.rt_video_path) if str(config.rt_video_path).strip() else (out_dir / "rt_video.mp4")
+            fourcc = rt_cv2.VideoWriter_fourcc(*"mp4v")
+            rt_writer = rt_cv2.VideoWriter(str(p), fourcc, float(config.rt_fps), rgb_size)
+
+    try:
+        for i in range(n_iters):
+            iter_sched_ns = next_tick_ns
+            now_ns = time.monotonic_ns()
+            schedule_error_ms = (now_ns - iter_sched_ns) * 1e-6
+
+            if prev_iter_ns is None:
+                actual_period_ms = float("nan")
+            else:
+                actual_period_ms = (now_ns - prev_iter_ns) * 1e-6
+            prev_iter_ns = now_ns
+
+            t_iter0 = time.perf_counter_ns()
+
+            # 1) Online pose input (1 frame)
+            t0 = time.perf_counter_ns()
+            if not use_realtime:
+                idx = int(i % seq_full.shape[0])
+                frame = np.asarray(seq_full[idx], dtype=np.float64)
+            else:
+                assert rt_queue is not None and rt_landmarker is not None and rt_cv2 is not None and rt_mp is not None
+                # Block for a synced rgb+depth sample, then run pose estimation and 3D deprojection.
+                msg_group = rt_queue.getAll()[-1]
+                frame_rgb = msg_group["rgb"]
+                frame_depth = msg_group["depth_aligned"]
+
+                frame_bgr = frame_rgb.getCvFrame()
+                depth_mm = frame_depth.getFrame()
+
+                t_sec = frame_rgb.getTimestampDevice().total_seconds()
+                ts_ms = int(t_sec * 1000)
+                if ts_ms <= rt_last_ts_ms:
+                    ts_ms = rt_last_ts_ms + 1
+                rt_last_ts_ms = ts_ms
+
+                frame_rgb_np = rt_cv2.cvtColor(frame_bgr, rt_cv2.COLOR_BGR2RGB)
+                mp_image = rt_mp.Image(image_format=rt_mp.ImageFormat.SRGB, data=frame_rgb_np)
+                result = rt_landmarker.detect_for_video(mp_image, ts_ms)
+
+                pose_xyz = np.full((len(POSE_KEYPOINT_IDS), 3), np.nan, dtype=np.float64)
+                if result.pose_landmarks and len(result.pose_landmarks) > 0:
+                    pose0 = result.pose_landmarks[0]
+                    h, w = frame_bgr.shape[:2]
+                    for j, idx in enumerate(POSE_KEYPOINT_IDS):
+                        lm = pose0[idx]
+                        u, v = float(lm.x) * w, float(lm.y) * h
+                        z_m = _rt_depth_at(depth_mm, u, v, patch=int(config.rt_patch))
+                        if z_m is None or z_m < float(config.rt_min_z) or z_m > float(config.rt_max_z):
+                            continue
+                        pose_xyz[j] = _rt_deproject(u, v, float(z_m))
+
+                if rt_writer is not None:
+                    rt_writer.write(frame_bgr)
+
+                if bool(config.rt_show_window):
+                    rt_cv2.imshow(str(config.rt_window_name), frame_bgr)
+                    if bool(config.rt_show_depth):
+                        depth_vis = rt_cv2.normalize(depth_mm, None, 0, 255, rt_cv2.NORM_MINMAX, dtype=rt_cv2.CV_8U)
+                        depth_vis = rt_cv2.applyColorMap(depth_vis, rt_cv2.COLORMAP_INFERNO)
+                        rt_cv2.imshow(f"{config.rt_window_name} (depth)", depth_vis)
+                    key = rt_cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
+
+                frame = pose_xyz
+            pose_ms = (time.perf_counter_ns() - t0) * 1e-6
+
+            # Update window
+            window.append(frame)
+            if len(window) > W:
+                window.pop(0)
+
+            # 2) Preprocess window (interpolate + lowpass in cartesian space)
+            t0 = time.perf_counter_ns()
+            win = np.stack(window, axis=0)  # (W,K,3)
+            win_i = interpolate_keypoints_cartesian(win)
+            win_f = lowpass_keypoints(
+                win_i, fps=online_fps, cutoff_hz=float(config.lowpass_cutoff_hz), order=int(config.lowpass_order)
             )
-        if not np.all(np.isfinite(qdot_human)):
-            qdot_human = qdot_h_prev.copy()
+            preprocess_ms = (time.perf_counter_ns() - t0) * 1e-6
 
-        q_h_prev = q_human.copy()
-        qdot_h_prev = qdot_human.copy()
+            # 3) Extract human joint angles (degrees)
+            t0 = time.perf_counter_ns()
+            q_win = sequence_to_angles_deg(win_f)
+            q_win = _clip_angles_deg(q_win)
+            q_human = np.asarray(q_win[-1], dtype=float).reshape(-1)
+            if not np.all(np.isfinite(q_human)):
+                q_human = q_h_prev.copy() if q_h_prev is not None else q_start.copy()
+            angle_extraction_ms = (time.perf_counter_ns() - t0) * 1e-6
 
-        # Initialize DMP state from first valid human state (do NOT overwrite later)
-        if q_dmp is None:
-            q_dmp = q_human.copy()
-            qdot_dmp = np.zeros_like(q_dmp)
-            q0_dmp = q_dmp.copy()
+            # 4) Estimate qdot_human (filtered finite differences)
+            if q_h_prev is None or not np.all(np.isfinite(q_h_prev)):
+                qdot_human = qdot_h_prev.copy()
+            else:
+                qdot_human = _finite_diff_filtered(
+                    q_prev=q_h_prev,
+                    q_curr=q_human,
+                    dt=dt_loop,
+                    qdot_prev=qdot_h_prev,
+                    alpha=float(config.qdot_alpha),
+                )
+            if not np.all(np.isfinite(qdot_human)):
+                qdot_human = qdot_h_prev.copy()
 
-        # 5) Phase estimation
-        t0 = time.perf_counter_ns()
-        progress = float("nan")
-        if config.phase_mode == "time":
-            t_s = (time.monotonic_ns() - loop_start_ns) * 1e-9
-            x = float(canonical_phase(float(t_s), tau=float(config.tau), alpha_canonical=float(config.alpha_canonical)))
-        elif config.phase_mode == "human-progress":
-            progress, x = _human_progress_phase(
-                q_human, q_start=q_start, q_goal=q_goal, alpha_canonical=float(config.alpha_canonical)
+            q_h_prev = q_human.copy()
+            qdot_h_prev = qdot_human.copy()
+
+            # Initialize DMP state from first valid human state (do NOT overwrite later)
+            if q_dmp is None:
+                q_dmp = q_human.copy()
+                qdot_dmp = np.zeros_like(q_dmp)
+                q0_dmp = q_dmp.copy()
+
+            # 5) Phase estimation
+            t0 = time.perf_counter_ns()
+            progress = float("nan")
+            if config.phase_mode == "time":
+                t_s = (time.monotonic_ns() - loop_start_ns) * 1e-9
+                x = float(
+                    canonical_phase(float(t_s), tau=float(config.tau), alpha_canonical=float(config.alpha_canonical))
+                )
+            elif config.phase_mode == "human-progress":
+                progress, x = _human_progress_phase(
+                    q_human, q_start=q_start, q_goal=q_goal, alpha_canonical=float(config.alpha_canonical)
+                )
+            elif config.phase_mode == "path-progress":
+                progress, x, active_segment, local_progress = _path_progress_phase(
+                    q_human,
+                    waypoints=waypoints,
+                    active_segment=active_segment,
+                    alpha_canonical=float(config.alpha_canonical),
+                    eps=float(config.progress_eps),
+                )
+            else:
+                raise ValueError("phase_mode must be 'time', 'human-progress', or 'path-progress'")
+            x = float(np.clip(x, 0.0, 1.0))
+            phase_estimation_ms = (time.perf_counter_ns() - t0) * 1e-6
+
+            # 6) DMP nominal step (internal state)
+            t0 = time.perf_counter_ns()
+            ddq_nom = _dmp_nominal_ddq(
+                model,
+                q=q_dmp,
+                dq=qdot_dmp,
+                q0=q0_dmp,
+                g=g_dmp,
+                x=x,
+                tau=float(config.tau),
             )
-        elif config.phase_mode == "path-progress":
-            progress, x, active_segment, local_progress = _path_progress_phase(
-                q_human,
-                waypoints=waypoints,
-                active_segment=active_segment,
-                alpha_canonical=float(config.alpha_canonical),
-                eps=float(config.progress_eps),
-            )
-        else:
-            raise ValueError("phase_mode must be 'time', 'human-progress', or 'path-progress'")
-        x = float(np.clip(x, 0.0, 1.0))
-        phase_estimation_ms = (time.perf_counter_ns() - t0) * 1e-6
+            dmp_step_ms = (time.perf_counter_ns() - t0) * 1e-6
 
-        # 6) DMP nominal step (internal state)
-        t0 = time.perf_counter_ns()
-        ddq_nom = _dmp_nominal_ddq(
-            model,
-            q=q_dmp,
-            dq=qdot_dmp,
-            q0=q0_dmp,
-            g=g_dmp,
-            x=x,
-            tau=float(config.tau),
-        )
-        dmp_step_ms = (time.perf_counter_ns() - t0) * 1e-6
+            # 7) Optional coupling
+            t0 = time.perf_counter_ns()
+            ddq = ddq_nom
+            if config.coupling_mode == "none":
+                pass
+            elif config.coupling_mode == "pd":
+                C = float(config.kp) * (q_human - q_dmp) + float(config.kd) * (qdot_human - qdot_dmp)
+                ddq = ddq_nom + float(config.autonomy_gain) * C
+            else:
+                raise ValueError("coupling_mode must be 'none' or 'pd'")
+            coupling_ms = (time.perf_counter_ns() - t0) * 1e-6
 
-        # 7) Optional coupling
-        t0 = time.perf_counter_ns()
-        ddq = ddq_nom
-        if config.coupling_mode == "none":
+            # 8) Integrate DMP state (Euler)
+            qdot_dmp = qdot_dmp + ddq * dt_loop
+            q_dmp = q_dmp + qdot_dmp * dt_loop
+            q_robot_desired = q_dmp.copy()
+
+            # 9) Communication
+            t0 = time.perf_counter_ns()
+            if config.comm_mode == "none":
+                pass
+            elif config.comm_mode == "sleep":
+                if config.comm_sleep_ms > 0:
+                    time.sleep(float(config.comm_sleep_ms) * 1e-3)
+            elif config.comm_mode == "can":
+                ok = bool(send_can_msg(q_robot_desired))  # type: ignore[misc]
+                _ = ok
+            else:
+                raise ValueError("comm_mode must be 'none', 'sleep', or 'can'")
+            comm_ms = (time.perf_counter_ns() - t0) * 1e-6
+
+            # Timings
+            e2e_ms = (time.perf_counter_ns() - t_iter0) * 1e-6
+            loop_exec_ms = e2e_ms
+
+            # Tracking error (optional diagnostic)
+            tracking_err_l2 = float(np.linalg.norm(q_human - q_dmp))
+
+            rec["pose_ms"].append(float(pose_ms))
+            rec["preprocess_ms"].append(float(preprocess_ms))
+            rec["angle_extraction_ms"].append(float(angle_extraction_ms))
+            rec["phase_estimation_ms"].append(float(phase_estimation_ms))
+            rec["dmp_step_ms"].append(float(dmp_step_ms))
+            rec["coupling_ms"].append(float(coupling_ms))
+            rec["comm_ms"].append(float(comm_ms))
+            rec["e2e_ms"].append(float(e2e_ms))
+            rec["loop_exec_ms"].append(float(loop_exec_ms))
+            rec["actual_period_ms"].append(float(actual_period_ms))
+            rec["schedule_error_ms"].append(float(schedule_error_ms))
+            rec["tracking_err_l2"].append(float(tracking_err_l2))
+            rec["phase_x"].append(float(x))
+            rec["progress"].append(float(progress))
+
+            # Fixed-period scheduling
+            next_tick_ns += period_ns
+            sleep_ns = next_tick_ns - time.monotonic_ns()
+            if sleep_ns > 0:
+                time.sleep(sleep_ns * 1e-9)
+    finally:
+        # Cleanup real-time resources (best-effort).
+        try:
+            if rt_writer is not None:
+                rt_writer.release()
+        except Exception:
             pass
-        elif config.coupling_mode == "pd":
-            C = float(config.kp) * (q_human - q_dmp) + float(config.kd) * (qdot_human - qdot_dmp)
-            ddq = ddq_nom + float(config.autonomy_gain) * C
-        else:
-            raise ValueError("coupling_mode must be 'none' or 'pd'")
-        coupling_ms = (time.perf_counter_ns() - t0) * 1e-6
-
-        # 8) Integrate DMP state (Euler)
-        qdot_dmp = qdot_dmp + ddq * dt_loop
-        q_dmp = q_dmp + qdot_dmp * dt_loop
-        q_robot_desired = q_dmp.copy()
-
-        # 9) Communication
-        t0 = time.perf_counter_ns()
-        if config.comm_mode == "none":
+        try:
+            if rt_cv2 is not None and bool(config.rt_show_window):
+                rt_cv2.destroyWindow(str(config.rt_window_name))
+                if bool(config.rt_show_depth):
+                    rt_cv2.destroyWindow(f"{config.rt_window_name} (depth)")
+        except Exception:
             pass
-        elif config.comm_mode == "sleep":
-            if config.comm_sleep_ms > 0:
-                time.sleep(float(config.comm_sleep_ms) * 1e-3)
-        elif config.comm_mode == "can":
-            ok = bool(send_can_msg(q_robot_desired))  # type: ignore[misc]
-            # best-effort: do not fail hard if callback returns False (experiment can still proceed)
-            _ = ok
-        else:
-            raise ValueError("comm_mode must be 'none', 'sleep', or 'can'")
-        comm_ms = (time.perf_counter_ns() - t0) * 1e-6
-
-        # Timings
-        e2e_ms = (time.perf_counter_ns() - t_iter0) * 1e-6
-        loop_exec_ms = e2e_ms
-
-        # Tracking error (optional diagnostic)
-        tracking_err_l2 = float(np.linalg.norm(q_human - q_dmp))
-
-        rec["pose_ms"].append(float(pose_ms))
-        rec["preprocess_ms"].append(float(preprocess_ms))
-        rec["angle_extraction_ms"].append(float(angle_extraction_ms))
-        rec["phase_estimation_ms"].append(float(phase_estimation_ms))
-        rec["dmp_step_ms"].append(float(dmp_step_ms))
-        rec["coupling_ms"].append(float(coupling_ms))
-        rec["comm_ms"].append(float(comm_ms))
-        rec["e2e_ms"].append(float(e2e_ms))
-        rec["loop_exec_ms"].append(float(loop_exec_ms))
-        rec["actual_period_ms"].append(float(actual_period_ms))
-        rec["schedule_error_ms"].append(float(schedule_error_ms))
-        rec["tracking_err_l2"].append(float(tracking_err_l2))
-        rec["phase_x"].append(float(x))
-        rec["progress"].append(float(progress))
-
-        # Fixed-period scheduling
-        next_tick_ns += period_ns
-        sleep_ns = next_tick_ns - time.monotonic_ns()
-        if sleep_ns > 0:
-            time.sleep(sleep_ns * 1e-9)
+        try:
+            if rt_landmarker is not None:
+                rt_landmarker.close()
+        except Exception:
+            pass
+        try:
+            if rt_pipeline is not None:
+                rt_pipeline.stop()
+        except Exception:
+            pass
+        try:
+            if rt_device is not None:
+                rt_device.close()
+        except Exception:
+            pass
 
     # --------------------------
     # OUTPUTS: timing.csv, summary.json, timing_plot.png

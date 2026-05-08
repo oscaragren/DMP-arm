@@ -66,6 +66,20 @@ def main() -> None:
     ap.add_argument("--alpha-transformation", type=float, default=None)
     ap.add_argument("--beta-transformation", type=float, default=None)
 
+    ap.add_argument("--pose-input-mode", type=str, default=None, choices=["replay", "realtime"])
+    ap.add_argument("--rt-fps", type=float, default=None)
+    ap.add_argument("--rt-width", type=int, default=None)
+    ap.add_argument("--rt-height", type=int, default=None)
+    ap.add_argument("--rt-model", type=str, default=None)
+    ap.add_argument("--rt-patch", type=int, default=None)
+    ap.add_argument("--rt-min-z", type=float, default=None)
+    ap.add_argument("--rt-max-z", type=float, default=None)
+    ap.add_argument("--rt-show-window", action="store_true")
+    ap.add_argument("--rt-show-depth", action="store_true")
+    ap.add_argument("--rt-window-name", type=str, default=None)
+    ap.add_argument("--rt-record-video", action="store_true")
+    ap.add_argument("--rt-video-path", type=str, default=None)
+
     ap.add_argument("--deadline-e2e-ms", type=float, default=None)
     ap.add_argument("--budget-pose-ms", type=float, default=None)
     ap.add_argument("--budget-preprocess-ms", type=float, default=None)
@@ -117,6 +131,25 @@ def main() -> None:
         beta_transformation=float(_get(cfg, "beta_transformation", 6.25))
         if args.beta_transformation is None
         else float(args.beta_transformation),
+        pose_input_mode=str(_get(cfg, "pose_input_mode", "replay"))
+        if args.pose_input_mode is None
+        else str(args.pose_input_mode),
+        rt_fps=float(_get(cfg, "rt_fps", 25.0)) if args.rt_fps is None else float(args.rt_fps),
+        rt_width=int(_get(cfg, "rt_width", 640)) if args.rt_width is None else int(args.rt_width),
+        rt_height=int(_get(cfg, "rt_height", 480)) if args.rt_height is None else int(args.rt_height),
+        rt_model_path=str(_get(cfg, "rt_model_path", "capture/pose_landmarker_lite.task"))
+        if args.rt_model is None
+        else str(args.rt_model),
+        rt_patch=int(_get(cfg, "rt_patch", 3)) if args.rt_patch is None else int(args.rt_patch),
+        rt_min_z=float(_get(cfg, "rt_min_z", 0.0)) if args.rt_min_z is None else float(args.rt_min_z),
+        rt_max_z=float(_get(cfg, "rt_max_z", 3.0)) if args.rt_max_z is None else float(args.rt_max_z),
+        rt_show_window=bool(_get(cfg, "rt_show_window", False)) or bool(args.rt_show_window),
+        rt_show_depth=bool(_get(cfg, "rt_show_depth", False)) or bool(args.rt_show_depth),
+        rt_window_name=str(_get(cfg, "rt_window_name", "RT Pose"))
+        if args.rt_window_name is None
+        else str(args.rt_window_name),
+        rt_record_video=bool(_get(cfg, "rt_record_video", False)) or bool(args.rt_record_video),
+        rt_video_path=str(_get(cfg, "rt_video_path", "")) if args.rt_video_path is None else str(args.rt_video_path),
     )
     budgets = ClassicalDMPTimingBudgetsMs(
         pose_ms=float(_get(cfg, "budget_pose_ms", 1.0)) if args.budget_pose_ms is None else float(args.budget_pose_ms),
