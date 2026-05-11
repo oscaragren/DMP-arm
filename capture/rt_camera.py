@@ -37,7 +37,7 @@ class RealtimeYoloPose3DConfig:
     rgb_h: int = 288
     stereo_w: int = 640
     stereo_h: int = 480
-    model_path: str = "models/yolo11n-pose512x288.rvc2.tar.xz"
+    model_path: str = "models/yolo11n-pose-512x288.rvc2.tar.xz"
     depth_patch: int = 5
     min_z_m: float = 0.15
     max_z_m: float = 4.0
@@ -197,6 +197,9 @@ class RealtimeYoloPose3D:
 
         # Pick most confident person/pose
         det = max(dets, key=lambda d: float(d.confidence))
+        print(type(det))
+
+        print("detection fields:", dir(det))
         kpts = det.getKeypoints2f()
 
         xyz = np.full((len(POSE_KEYPOINT_IDS), 3), np.nan, dtype=np.float64)

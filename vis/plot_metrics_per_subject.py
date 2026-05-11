@@ -319,7 +319,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "--json",
         dest="json_path",
         type=Path,
-        default=Path("results/quant_analysis_20260505_132732.json"),
+        default=Path("results/quant_analysis_20260506_092902.json"),
         help="Path to the results JSON file.",
     )
     # Note: We always plot demo + base + personalized. These options only affect old-schema mapping.

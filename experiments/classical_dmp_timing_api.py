@@ -24,9 +24,9 @@ from quant_analysis import (
 @dataclass(frozen=True)
 class ClassicalDMPTimingConfig:
     # Loop setup
-    n_iters: int = 2000
+    n_iters: int = 1000
     period_ms: float = 10.0
-    window_size: int = 15
+    window_size: int = 10
 
     # DMP params (offline fit only)
     tau: float = 1.0
@@ -46,7 +46,7 @@ class ClassicalDMPTimingConfig:
     autonomy_gain: float = 1.0
 
     # Communication
-    comm_mode: str = "none"  # "none" | "sleep" | "can"
+    comm_mode: str = "can"  # "none" | "sleep" | "can"
     comm_sleep_ms: float = 0.0
 
     # Robust derivatives
