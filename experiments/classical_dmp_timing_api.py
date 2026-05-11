@@ -363,6 +363,7 @@ def run_classical_dmp_timing_experiment(
     send_can_msg: Optional[Callable[[np.ndarray], bool]] = None,
     can_interface: Any = None,
     curvature_weights: Optional[np.ndarray] = None,
+    trial_file_suffix: str = "",
 ) -> dict[str, Any]:
     """
     Hardware-independent, API-based experiment:
@@ -737,7 +738,7 @@ def run_classical_dmp_timing_experiment(
     import matplotlib.pyplot as plt
 
     df = pd.DataFrame(rec)
-    timing_csv = out_dir / "timing.csv"
+    timing_csv = out_dir / f"timing{trial_file_suffix}.csv"
     df.to_csv(timing_csv, index=False)
 
     budgets_map = {
@@ -775,7 +776,7 @@ def run_classical_dmp_timing_experiment(
         },
     }
 
-    summary_json = out_dir / "summary.json"
+    summary_json = out_dir / f"summary{trial_file_suffix}.json"
     _json_dump(
         summary_json,
         {
@@ -784,7 +785,7 @@ def run_classical_dmp_timing_experiment(
             "paths": {
                 "timing_csv": str(timing_csv),
                 "summary_json": str(summary_json),
-                "timing_plot_png": str(out_dir / "timing_plot.png"),
+                "timing_plot_png": str(out_dir / f"timing_plot{trial_file_suffix}.png"),
                 "offline_model_npz": str(out_dir / "dmp_model_offline.npz"),
             },
             "summary": summary,
@@ -819,7 +820,7 @@ def run_classical_dmp_timing_experiment(
     axs[3].grid(True, alpha=0.3)
 
     fig.tight_layout()
-    plot_path = out_dir / "timing_plot.png"
+    plot_path = out_dir / f"timing_plot{trial_file_suffix}.png"
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
 
