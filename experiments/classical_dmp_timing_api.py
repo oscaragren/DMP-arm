@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from dmp.dmp import DMPModel, canonical_phase
+from dmp.dmp import DMPModel, canonical_phase, curvature_coupling
 
 # Reuse existing repo primitives (data conventions / angle definitions)
 from quant_analysis import (
@@ -304,6 +304,34 @@ def _dmp_nominal_ddq(
     ) / (float(tau) ** 2)
     return np.asarray(ddq, dtype=float)
 
+def _dmp_nominal_ddq_with_curvature(
+    model: DMPModel,
+    *,
+    q: np.ndarray,
+    dq: np.ndarray,
+    q0: np.ndarray,
+    g: np.ndarray,
+    x: float,
+    tau: float,
+) -> np.ndarray:
+    """
+    Nominal DMP acceleration (vectorized over joints) with curvature coupling.
+    """
+    q = np.asarray(q, dtype=float).reshape(-1)
+    dq = np.asarray(dq, dtype=float).reshape(-1)
+    q0 = np.asarray(q0, dtype=float).reshape(-1)
+    g = np.asarray(g, dtype=float).reshape(-1)
+
+    psi = np.exp(-model.widths * (float(x) - model.centers) ** 2)
+    psi_norm = psi / (float(np.sum(psi)) + 1e-10)
+    f = float(x) * (model.weights @ psi_norm)  # (n_joints,)
+    C_curv = curvature_coupling(q, g, x, model.centers, model.widths, model.curvature_weights)
+    ddq = (
+        model.alpha_transformation * model.beta_transformation * (g - q)
+        - model.alpha_transformation * dq
+        + (g - q0) * f + C_curv
+    ) / (float(tau) ** 2)
+    return np.asarray(ddq, dtype=float)
 
 def _stage_stats_ms(x_ms: np.ndarray) -> dict[str, float]:
     x = np.asarray(x_ms, dtype=float).reshape(-1)
@@ -332,6 +360,7 @@ def run_classical_dmp_timing_experiment(
     config: ClassicalDMPTimingConfig,
     budgets: ClassicalDMPTimingBudgetsMs,
     send_can_msg: Optional[Callable[[np.ndarray], bool]] = None,
+    curvature_weights: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
     """
     Hardware-independent, API-based experiment:
@@ -381,6 +410,7 @@ def run_classical_dmp_timing_experiment(
         alpha_canonical=float(config.alpha_canonical),
         alpha_transformation=float(config.alpha_transformation),
         beta_transformation=float(config.beta_transformation),
+        curvature_weights=curvature_weights,
     )
     offline_fit_ms = (time.perf_counter_ns() - t_fit0) * 1e-6
 
@@ -603,15 +633,27 @@ def run_classical_dmp_timing_experiment(
 
             # 6) DMP nominal step (internal state)
             t0 = time.perf_counter_ns()
-            ddq_nom = _dmp_nominal_ddq(
-                model,
-                q=q_dmp,
-                dq=qdot_dmp,
-                q0=q0_dmp,
-                g=g_dmp,
-                x=x,
-                tau=float(config.tau),
-            )
+            if model.curvature_weights is not None:
+                ddq_nom = _dmp_nominal_ddq_with_curvature(
+                    model,
+                    q=q_dmp,
+                    dq=qdot_dmp,
+                    q0=q0_dmp,
+                    g=g_dmp,
+                    x=x,
+                    tau=float(config.tau),
+                )
+            else:
+                t0 = time.perf_counter_ns()
+                ddq_nom = _dmp_nominal_ddq(
+                    model,
+                    q=q_dmp,
+                    dq=qdot_dmp,
+                    q0=q0_dmp,
+                    g=g_dmp,
+                    x=x,
+                    tau=float(config.tau),
+                )
             dmp_step_ms = (time.perf_counter_ns() - t0) * 1e-6
 
             # 7) Optional coupling

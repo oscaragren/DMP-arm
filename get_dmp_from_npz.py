@@ -46,8 +46,9 @@ def export_generated_trajectory(npz_path: Path, *, out_path: Path) -> Path:
 
 
 def main() -> None:
-    default_npz = Path("data/processed/subject_06/move_cup/trial_006/dmp_rollout_base.npz")
-    default_out = Path("data/processed/subject_06/move_cup/trial_006/q_gen_base.json")
+    default_npz = Path("coupling/dmp_model_personalized.npz")
+    #default_npz = Path("data/processed/subject_06/move_cup/trial_006/dmp_rollout_base.npz")
+    default_out = Path("coupling/curvature_weights_personalized.json")
 
     parser = argparse.ArgumentParser(
         description="Export the generated DMP trajectory from a rollout .npz to a JSON file."
@@ -68,11 +69,20 @@ def main() -> None:
 
     npz_path = args.npz.expanduser().resolve()
     out_path = args.out.expanduser().resolve()
-    export_generated_trajectory(npz_path, out_path=out_path)
-    print(f"Wrote: {out_path}")
+    data = np.load(npz_path, allow_pickle=False)
+    #payload = data["curvature_weights"]
+    payload: dict[str, Any] = {
+        "source_npz": str(npz_path),
+        "key": "curvature_weights",
+        "curvature_weights": _np_to_jsonable(np.asarray(data["curvature_weights"], dtype=float)),
+    }
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    #export_generated_trajectory(npz_path, out_path=out_path)
+    #print(f"Wrote: {out_path}")
 
     # print numpy array so that i can copy and paste it into the experiment.py file, with 3 decimal places
-    print(np.round(np.load(npz_path)["q_gen_deg"], 3).tolist())
+    #print(np.round(np.load(npz_path)["q_gen_deg"], 3).tolist())
 
 
 if __name__ == "__main__":
