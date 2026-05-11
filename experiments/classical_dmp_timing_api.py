@@ -313,6 +313,7 @@ def _dmp_nominal_ddq_with_curvature(
     g: np.ndarray,
     x: float,
     tau: float,
+    curvature_weights: np.ndarray,
 ) -> np.ndarray:
     """
     Nominal DMP acceleration (vectorized over joints) with curvature coupling.
@@ -325,7 +326,7 @@ def _dmp_nominal_ddq_with_curvature(
     psi = np.exp(-model.widths * (float(x) - model.centers) ** 2)
     psi_norm = psi / (float(np.sum(psi)) + 1e-10)
     f = float(x) * (model.weights @ psi_norm)  # (n_joints,)
-    C_curv = curvature_coupling(q, g, x, model.centers, model.widths, model.curvature_weights)
+    C_curv = curvature_coupling(q, g, x, model.centers, model.widths, curvature_weights)
     ddq = (
         model.alpha_transformation * model.beta_transformation * (g - q)
         - model.alpha_transformation * dq
@@ -642,6 +643,7 @@ def run_classical_dmp_timing_experiment(
                     g=g_dmp,
                     x=x,
                     tau=float(config.tau),
+                    curvature_weights=curvature_weights,
                 )
             else:
                 t0 = time.perf_counter_ns()
