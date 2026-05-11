@@ -68,10 +68,10 @@ class ClassicalDMPTimingConfig:
 
     # Real-time camera/pose settings (only used if pose_input_mode="realtime")
     rt_fps: float = 25.0
-    rt_width: int = 640
-    rt_height: int = 480
+    rt_width: int = 512
+    rt_height: int = 288
     # DepthAI YOLO-pose NNArchive (tar.xz) used by `capture/convert.py`
-    rt_model_path: str = "models/yolo11n-pose.rvc2.tar.xz"
+    rt_model_path: str = "models/yolo11n-pose-512x288.rvc2.tar.xz"
     rt_patch: int = 3
     rt_min_z: float = 0.15
     rt_max_z: float = 4.0
@@ -361,7 +361,9 @@ def run_classical_dmp_timing_experiment(
     config: ClassicalDMPTimingConfig,
     budgets: ClassicalDMPTimingBudgetsMs,
     send_can_msg: Optional[Callable[[np.ndarray], bool]] = None,
+    can_interface: Any = None,
     curvature_weights: Optional[np.ndarray] = None,
+    trial_file_suffix: str = "",
 ) -> dict[str, Any]:
     """
     Hardware-independent, API-based experiment:
@@ -683,7 +685,7 @@ def run_classical_dmp_timing_experiment(
                 if config.comm_sleep_ms > 0:
                     time.sleep(float(config.comm_sleep_ms) * 1e-3)
             elif config.comm_mode == "can":
-                ok = bool(send_can_msg(q_robot_desired))  # type: ignore[misc]
+                ok = bool(send_can_msg(q_robot_desired, can_interface))  # type: ignore[misc]
                 _ = ok
             else:
                 raise ValueError("comm_mode must be 'none', 'sleep', or 'can'")
@@ -736,7 +738,7 @@ def run_classical_dmp_timing_experiment(
     import matplotlib.pyplot as plt
 
     df = pd.DataFrame(rec)
-    timing_csv = out_dir / "timing.csv"
+    timing_csv = out_dir / f"timing{trial_file_suffix}.csv"
     df.to_csv(timing_csv, index=False)
 
     budgets_map = {
@@ -774,7 +776,7 @@ def run_classical_dmp_timing_experiment(
         },
     }
 
-    summary_json = out_dir / "summary.json"
+    summary_json = out_dir / f"summary{trial_file_suffix}.json"
     _json_dump(
         summary_json,
         {
@@ -783,7 +785,7 @@ def run_classical_dmp_timing_experiment(
             "paths": {
                 "timing_csv": str(timing_csv),
                 "summary_json": str(summary_json),
-                "timing_plot_png": str(out_dir / "timing_plot.png"),
+                "timing_plot_png": str(out_dir / f"timing_plot{trial_file_suffix}.png"),
                 "offline_model_npz": str(out_dir / "dmp_model_offline.npz"),
             },
             "summary": summary,
@@ -818,7 +820,7 @@ def run_classical_dmp_timing_experiment(
     axs[3].grid(True, alpha=0.3)
 
     fig.tight_layout()
-    plot_path = out_dir / "timing_plot.png"
+    plot_path = out_dir / f"timing_plot{trial_file_suffix}.png"
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
 
