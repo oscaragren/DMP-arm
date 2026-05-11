@@ -361,6 +361,7 @@ def run_classical_dmp_timing_experiment(
     config: ClassicalDMPTimingConfig,
     budgets: ClassicalDMPTimingBudgetsMs,
     send_can_msg: Optional[Callable[[np.ndarray], bool]] = None,
+    can_interface: Any = None,
     curvature_weights: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
     """
@@ -683,7 +684,7 @@ def run_classical_dmp_timing_experiment(
                 if config.comm_sleep_ms > 0:
                     time.sleep(float(config.comm_sleep_ms) * 1e-3)
             elif config.comm_mode == "can":
-                ok = bool(send_can_msg(q_robot_desired))  # type: ignore[misc]
+                ok = bool(send_can_msg(q_robot_desired, can_interface))  # type: ignore[misc]
                 _ = ok
             else:
                 raise ValueError("comm_mode must be 'none', 'sleep', or 'can'")
