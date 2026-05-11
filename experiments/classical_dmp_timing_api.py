@@ -68,10 +68,10 @@ class ClassicalDMPTimingConfig:
 
     # Real-time camera/pose settings (only used if pose_input_mode="realtime")
     rt_fps: float = 25.0
-    rt_width: int = 640
-    rt_height: int = 480
+    rt_width: int = 512
+    rt_height: int = 288
     # DepthAI YOLO-pose NNArchive (tar.xz) used by `capture/convert.py`
-    rt_model_path: str = "models/yolo11n-pose.rvc2.tar.xz"
+    rt_model_path: str = "models/yolo11n-pose-512x288.rvc2.tar.xz"
     rt_patch: int = 3
     rt_min_z: float = 0.15
     rt_max_z: float = 4.0
